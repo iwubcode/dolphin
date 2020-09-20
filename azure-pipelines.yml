@@ -15,7 +15,7 @@ variables:
   buildConfiguration: 'Release'
 
 steps:
-- task: UpdateGitSubmodules@1
+- task: CmdLine@1
   inputs:
     script: |
       echo init git submodules
