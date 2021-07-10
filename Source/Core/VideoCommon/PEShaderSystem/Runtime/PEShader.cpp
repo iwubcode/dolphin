@@ -6,6 +6,7 @@ namespace VideoCommon::PE
 {
 bool Shader::CreateOptions(const ShaderConfig& config)
 {
+  m_options.clear();
   std::size_t buffer_size;
   for (const auto& config_option : config.m_options)
   {
@@ -26,7 +27,7 @@ bool Shader::CreatePasses(const ShaderConfig& config)
       return false;
   }
 
-  std::shared_ptr<AbstractShader> vertex_shader = CompileVertexShader(config.m_source_path);
+  std::shared_ptr<AbstractShader> vertex_shader = CompileVertexShader(config);
   if (!vertex_shader)
   {
     config.m_runtime_info->SetError(true);
@@ -154,4 +155,38 @@ void Shader::Apply(bool skip_final_copy, const ShaderApplyOptions& options)
 	}
 }
 
+std::unique_ptr<AbstractShader> Shader::CompileGeometryShader() const
+{
+  std::string source = FramebufferShaderGen::GeneratePassthroughGeometryShader(2, 0);
+  return g_renderer->CreateShaderFromSource(ShaderStage::Geometry, std::move(source));
+}
+
+void Shader::PrepareUniformHeader(fmt::memory_buffer& shader_source) const
+{
+  if (g_ActiveConfig.backend_info.api_type == APIType::D3D)
+    fmt::format_to(shader_source, "cbuffer PSBlock : register(b0) {\n");
+  else
+    fmt::format_to(shader_source, "UBO_BINDING(std140, 1) uniform PSBlock {\n");
+
+  for (const auto& option : m_options)
+  {
+	  option.WriteToShaderSource(shader_source);
+  }
+  fmt::format_to(shader_source, "}\n");
+}
+
+std::shared_ptr<AbstractShader> Shader::CompileVertexShader(const ShaderConfig& config) const
+{
+  fmt::memory_buffer shader_source;
+  PrepareUniformHeader(shader_source);
+  
+  std::unique_ptr<AbstractShader> vs =
+      g_renderer->CreateShaderFromSource(ShaderStage::Vertex, fmt::to_string(shader_source));
+  if (!vs)
+  {
+    return nullptr;
+  }
+  
+  // convert from unique_ptr to shared_ptr, as many passes share one VS
+  return std::shared_ptr<AbstractShader>(vs.release());
 }

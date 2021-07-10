@@ -8,6 +8,8 @@
 #include "VideoCommon/PEShaderSystem/Runtime/PEShaderApplyOptions.h"
 #include "VideoCommon/PEShaderSystem/Runtime/PEShaderPass.h"
 
+class AbstractShader;
+
 namespace VideoCommon::PE
 {
   class ShaderOption;
@@ -21,6 +23,9 @@ namespace VideoCommon::PE
 	void Apply(bool skip_final_copy, const ShaderApplyOptions& options);
   private:
     void UploadUniforms();
+	std::unique_ptr<AbstractShader> CompileGeometryShader() const;
+	void PrepareUniformHeader(fmt::memory_buffer& shader_source) const;
+	std::shared_ptr<AbstractShader> CompileVertexShader(const ShaderConfig& config) const;
     std::vector<u8> m_uniform_staging_buffer;
     std::vector<ShaderPass> m_passes;
     std::vector<std::unique_ptr<ShaderOption>> m_options;

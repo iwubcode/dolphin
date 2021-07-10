@@ -18,14 +18,14 @@ namespace VideoCommon::PE
 {
   struct CommonOptionContext
   {
-    std::string ui_name;
-    std::string ui_description;
-    std::string shader_name;
-    std::string dependent_option;
-    std::string group_name;
+    std::string m_ui_name;
+    std::string m_ui_description;
+    std::string m_shader_name;
+    std::string m_dependent_option;
+    std::string m_group_name;
 
-    bool compile_time_constant = false;
-    bool is_pass_dependent_option = false;
+    bool m_compile_time_constant = false;
+    bool m_is_pass_dependent_option = false;
   };
 
   template <typename T>
@@ -57,11 +57,12 @@ namespace VideoCommon::PE
   struct FloatOption<Size>
   {
     using OptionType = std::array<float, Size>;
-    CommonOptionContext common;
+    CommonOptionContext m_common;
 
-  OptionType default_value;
-  OptionType min_value;
-  OptionType max_value;
+  OptionType m_default_value;
+  OptionType m_min_value;
+  OptionType m_max_value;
+  OptionType m_value;
   
   History<OptionType> m_history;
   Snapshots<OptionType> m_snapshots;
@@ -70,13 +71,13 @@ namespace VideoCommon::PE
 template <typename Size>
 struct IntOption<Size>
 {
-  using OptionType = std::array<int, Size>;
-  CommonOptionContext common;
+  using OptionType = std::array<u32, Size>;
+  CommonOptionContext m_common;
 
-  OptionType default_value;
-  OptionType min_value;
-  OptionType max_value;
-  OptionType value;
+  OptionType m_default_value;
+  OptionType m_min_value;
+  OptionType m_max_value;
+  OptionType m_value;
   
   History<OptionType> m_history;
   Snapshots<OptionType> m_snapshots;
@@ -89,8 +90,6 @@ struct ColorOption final : public FloatOption<3>
 struct ColorAlphaOption final : public FloatOption<4>
 {
 };
-
-// TODO: float matrix option
 
 // TODO: game-memory option...
 
