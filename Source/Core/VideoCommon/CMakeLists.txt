@@ -64,8 +64,6 @@ add_library(videocommon
   PixelShaderGen.h
   PixelShaderManager.cpp
   PixelShaderManager.h
-  PostProcessing.cpp
-  PostProcessing.h
   RenderBase.cpp
   RenderBase.h
   RenderState.cpp

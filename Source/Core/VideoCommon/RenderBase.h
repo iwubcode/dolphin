@@ -51,11 +51,6 @@ enum class EFBReinterpretType;
 enum class StagingTextureType;
 enum class AspectMode;
 
-namespace VideoCommon
-{
-class PostProcessing;
-}  // namespace VideoCommon
-
 struct EfbPokeData
 {
   u16 x, y;
@@ -237,7 +232,6 @@ public:
   PixelFormat GetPrevPixelFormat() const { return m_prev_efb_format; }
   void StorePixelFormat(PixelFormat new_format) { m_prev_efb_format = new_format; }
   bool EFBHasAlphaChannel() const;
-  VideoCommon::PostProcessing* GetPostProcessor() const { return m_post_processor.get(); }
   // Final surface changing
   // This is called when the surface is resized (WX) or the window changes (Android).
   void ChangeSurface(void* new_surface_handle);
@@ -331,8 +325,6 @@ protected:
   int m_frame_count = 0;
 
   FPSCounter m_fps_counter;
-
-  std::unique_ptr<VideoCommon::PostProcessing> m_post_processor;
 
   void* m_new_surface_handle = nullptr;
   Common::Flag m_surface_changed;

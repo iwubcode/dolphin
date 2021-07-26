@@ -70,7 +70,6 @@
 #include "VideoCommon/OpcodeDecoding.h"
 #include "VideoCommon/PixelEngine.h"
 #include "VideoCommon/PixelShaderManager.h"
-#include "VideoCommon/PostProcessing.h"
 #include "VideoCommon/ShaderCache.h"
 #include "VideoCommon/ShaderGenCommon.h"
 #include "VideoCommon/Statistics.h"
@@ -120,10 +119,6 @@ bool Renderer::Initialize()
   if (!InitializeImGui())
     return false;
 
-  m_post_processor = std::make_unique<VideoCommon::PostProcessing>();
-  if (!m_post_processor->Initialize(m_backbuffer_format))
-    return false;
-
   return true;
 }
 
@@ -136,7 +131,6 @@ void Renderer::Shutdown()
   // can require additional graphics sub-systems so it needs to be done first
   ShutdownFrameDumping();
   ShutdownImGui();
-  m_post_processor.reset();
 }
 
 void Renderer::BeginUtilityDrawing()
@@ -445,16 +439,6 @@ void Renderer::CheckForConfigChanges()
   if (old_efb_access_tile_size != g_ActiveConfig.iEFBAccessTileSize)
     g_framebuffer_manager->SetEFBCacheTileSize(std::max(g_ActiveConfig.iEFBAccessTileSize, 0));
 
-  // Check for post-processing shader changes. Done up here as it doesn't affect anything outside
-  // the post-processor. Note that options are applied every frame, so no need to check those.
-  if (m_post_processor->GetConfig()->GetShader() != g_ActiveConfig.sPostProcessingShader)
-  {
-    // The existing shader must not be in use when it's destroyed
-    WaitForGPUIdle();
-
-    m_post_processor->RecompileShader();
-  }
-
   // Determine which (if any) settings have changed.
   ShaderHostConfig new_host_config = ShaderHostConfig::GetCurrent();
   u32 changed_bits = 0;
@@ -518,7 +502,6 @@ void Renderer::CheckForConfigChanges()
   if (changed_bits & CONFIG_CHANGE_BIT_STEREO_MODE)
   {
     RecompileImGuiPipeline();
-    m_post_processor->RecompilePipeline();
   }
 }
 
@@ -1397,18 +1380,6 @@ void Renderer::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
                                  const AbstractTexture* source_texture,
                                  const MathUtil::Rectangle<int>& source_rc)
 {
-  if (g_ActiveConfig.stereo_mode == StereoMode::SBS ||
-      g_ActiveConfig.stereo_mode == StereoMode::TAB)
-  {
-    const auto [left_rc, right_rc] = ConvertStereoRectangle(target_rc);
-
-    m_post_processor->BlitFromTexture(left_rc, source_rc, source_texture, 0);
-    m_post_processor->BlitFromTexture(right_rc, source_rc, source_texture, 1);
-  }
-  else
-  {
-    m_post_processor->BlitFromTexture(target_rc, source_rc, source_texture, 0);
-  }
 }
 
 bool Renderer::IsFrameDumping() const

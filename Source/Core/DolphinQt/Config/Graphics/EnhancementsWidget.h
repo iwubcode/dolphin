@@ -28,15 +28,12 @@ private:
   void CreateWidgets();
   void ConnectWidgets();
   void AddDescriptions();
-  void ConfigurePostProcessingShader();
-  void LoadPPShaders();
 
   // Enhancements
   GraphicsChoice* m_ir_combo;
   ToolTipComboBox* m_aa_combo;
   GraphicsChoice* m_af_combo;
   ToolTipComboBox* m_pp_effect;
-  QPushButton* m_configure_pp_effect;
   GraphicsBool* m_scaled_efb_copy;
   GraphicsBool* m_per_pixel_lighting;
   GraphicsBool* m_force_texture_filtering;
