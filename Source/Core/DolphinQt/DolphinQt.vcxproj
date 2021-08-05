@@ -83,6 +83,13 @@
     <ClCompile Include="Config\Graphics\PostProcessingAddShaderListWidget.cpp" />
     <ClCompile Include="Config\Graphics\PostProcessingShaderListWidget.cpp" />
     <ClCompile Include="Config\Graphics\SoftwareRendererWidget.cpp" />
+    <ClCompile Include="Config\Graphics\Trigger\GraphicsTriggerSelectionDialog.cpp" />
+    <ClCompile Include="Config\Graphics\Trigger\GraphicsTriggerWidget.cpp" />
+    <ClCompile Include="Config\Graphics\Trigger\GraphicsTriggerWindow.cpp" />
+    <ClCompile Include="Config\Graphics\Trigger\NewDrawCall2DTriggerDialog.cpp" />
+    <ClCompile Include="Config\Graphics\Trigger\NewDrawCall3DTriggerDialog.cpp" />
+    <ClCompile Include="Config\Graphics\Trigger\NewEFBTriggerDialog.cpp" />
+    <ClCompile Include="Config\Graphics\Trigger\NewTextureLoadTriggerDialog.cpp" />
     <ClCompile Include="Config\InfoWidget.cpp" />
     <ClCompile Include="Config\LogConfigWidget.cpp" />
     <ClCompile Include="Config\LogWidget.cpp" />
@@ -274,6 +281,13 @@
     <QtMoc Include="Config\Graphics\PostProcessingAddShaderListWidget.h" />
     <QtMoc Include="Config\Graphics\PostProcessingShaderListWidget.h" />
     <QtMoc Include="Config\Graphics\SoftwareRendererWidget.h" />
+    <QtMoc Include="Config\Graphics\Trigger\GraphicsTriggerSelectionDialog.h" />
+    <QtMoc Include="Config\Graphics\Trigger\GraphicsTriggerWidget.h" />
+    <QtMoc Include="Config\Graphics\Trigger\GraphicsTriggerWindow.h" />
+    <QtMoc Include="Config\Graphics\Trigger\NewDrawCall2DTriggerDialog.h" />
+    <QtMoc Include="Config\Graphics\Trigger\NewDrawCall3DTriggerDialog.h" />
+    <QtMoc Include="Config\Graphics\Trigger\NewEFBTriggerDialog.h" />
+    <QtMoc Include="Config\Graphics\Trigger\NewTextureLoadTriggerDialog.h" />
     <QtMoc Include="Config\InfoWidget.h" />
     <QtMoc Include="Config\LogConfigWidget.h" />
     <QtMoc Include="Config\LogWidget.h" />
