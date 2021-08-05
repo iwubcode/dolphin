@@ -13,6 +13,7 @@ class QCheckBox;
 class QComboBox;
 class QSpinBox;
 class ToolTipCheckBox;
+class ToolTipPushButton;
 
 class AdvancedWidget final : public GraphicsWidget
 {
@@ -58,6 +59,7 @@ private:
   ToolTipCheckBox* m_enable_prog_scan;
   GraphicsBool* m_backend_multithreading;
   GraphicsBool* m_borderless_fullscreen;
+  ToolTipPushButton* m_configure_graphics_triggers;
 
   // Experimental
   GraphicsBool* m_defer_efb_access_invalidation;

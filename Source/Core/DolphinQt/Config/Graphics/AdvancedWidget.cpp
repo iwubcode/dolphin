@@ -19,7 +19,9 @@
 #include "DolphinQt/Config/Graphics/GraphicsChoice.h"
 #include "DolphinQt/Config/Graphics/GraphicsInteger.h"
 #include "DolphinQt/Config/Graphics/GraphicsWindow.h"
+#include "DolphinQt/Config/Graphics/Trigger/GraphicsTriggerWindow.h"
 #include "DolphinQt/Config/ToolTipControls/ToolTipCheckBox.h"
+#include "DolphinQt/Config/ToolTipControls/ToolTipPushButton.h"
 #include "DolphinQt/Settings.h"
 
 #include "VideoCommon/VideoConfig.h"
@@ -120,6 +122,7 @@ void AdvancedWidget::CreateWidgets()
   m_enable_prog_scan = new ToolTipCheckBox(tr("Enable Progressive Scan"));
   m_backend_multithreading =
       new GraphicsBool(tr("Backend Multithreading"), Config::GFX_BACKEND_MULTITHREADING);
+  m_configure_graphics_triggers = new ToolTipPushButton(tr("Configure"));
 
   misc_layout->addWidget(m_enable_cropping, 0, 0);
   misc_layout->addWidget(m_enable_prog_scan, 0, 1);
@@ -130,6 +133,8 @@ void AdvancedWidget::CreateWidgets()
 
   misc_layout->addWidget(m_borderless_fullscreen, 1, 1);
 #endif
+  dump_layout->addWidget(new QLabel(tr("Graphics Triggers:")), 2, 0);
+  dump_layout->addWidget(m_configure_graphics_triggers, 2, 1);
 
   // Experimental.
   auto* experimental_box = new QGroupBox(tr("Experimental"));
@@ -158,6 +163,10 @@ void AdvancedWidget::ConnectWidgets()
   connect(m_dump_use_ffv1, &QCheckBox::toggled, this, &AdvancedWidget::SaveSettings);
   connect(m_enable_prog_scan, &QCheckBox::toggled, this, &AdvancedWidget::SaveSettings);
   connect(m_dump_textures, &QCheckBox::toggled, this, &AdvancedWidget::SaveSettings);
+  connect(m_configure_graphics_triggers, &QPushButton::pressed, this, [this]() {
+    GraphicsTriggerWindow trigger_window(this);
+    trigger_window.exec();
+  });
 }
 
 void AdvancedWidget::LoadSettings()
@@ -276,6 +285,11 @@ void AdvancedWidget::AddDescriptions()
       "unchecked.</dolphin_emphasis>");
 #endif
 
+  static const char TR_GRAPHICS_TRIGGER_CONFIGURE_DESCRIPTION[] = QT_TR_NOOP(
+      "Launches a window to configure when enhanced graphical effects can be triggered. "
+      "<br><br><dolphin_emphasis>If unsure, leave this "
+      "unchecked.</dolphin_emphasis>");
+
   m_enable_wireframe->SetDescription(tr(TR_WIREFRAME_DESCRIPTION));
   m_show_statistics->SetDescription(tr(TR_SHOW_STATS_DESCRIPTION));
   m_enable_format_overlay->SetDescription(tr(TR_TEXTURE_FORMAT_DESCRIPTION));
@@ -298,5 +312,7 @@ void AdvancedWidget::AddDescriptions()
 #ifdef _WIN32
   m_borderless_fullscreen->SetDescription(tr(TR_BORDERLESS_FULLSCREEN_DESCRIPTION));
 #endif
+  m_configure_graphics_triggers->SetDescription(tr(TR_GRAPHICS_TRIGGER_CONFIGURE_DESCRIPTION));
+  m_configure_graphics_triggers->SetTitle(tr("Configure Graphics Triggers"));
   m_defer_efb_access_invalidation->SetDescription(tr(TR_DEFER_EFB_ACCESS_INVALIDATION_DESCRIPTION));
 }
