@@ -3,8 +3,11 @@
 
 #include <algorithm>
 
+#include <fmt/format.h>
+
 #include "Common/CPUDetect.h"
 #include "Common/CommonTypes.h"
+#include "Common/FileUtil.h"
 #include "Common/StringUtil.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/ConfigManager.h"
@@ -222,4 +225,18 @@ u32 VideoConfig::GetShaderPrecompilerThreads() const
     return static_cast<u32>(iShaderPrecompilerThreads);
   else
     return GetNumAutoShaderCompilerThreads();
+}
+
+void VideoConfig::LoadDefaultCustomShaders()
+{
+  const std::string default_profile_path =
+      fmt::format("{}/DefaultShaderProfile.json", File::GetUserPath(D_CONFIG_IDX));
+  m_trigger_config.LoadFromProfile(default_profile_path);
+}
+
+void VideoConfig::SaveDefaultCustomShaders() const
+{
+  const std::string default_profile_path =
+      fmt::format("{}/DefaultShaderProfile.json", File::GetUserPath(D_CONFIG_IDX));
+  m_trigger_config.SaveToProfile(default_profile_path);
 }

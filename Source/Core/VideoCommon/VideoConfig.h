@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Common/CommonTypes.h"
+#include "VideoCommon/PEShaderSystem/Config/PETriggerConfig.h"
 
 enum class APIType;
 
@@ -57,6 +58,9 @@ struct VideoConfig final
   void Refresh();
   void VerifyValidity();
 
+  void LoadDefaultCustomShaders();
+  void SaveDefaultCustomShaders() const;
+
   // General
   bool bVSync;
   bool bVSyncActive;
@@ -77,6 +81,7 @@ struct VideoConfig final
   bool bDisableCopyFilter;
   bool bArbitraryMipmapDetection;
   float fArbitraryMipmapDetectionThreshold;
+  VideoCommon::PE::TriggerConfig m_trigger_config;
 
   // Information
   bool bShowFPS;
