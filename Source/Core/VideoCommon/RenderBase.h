@@ -30,6 +30,8 @@
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/FPSCounter.h"
 #include "VideoCommon/FrameDump.h"
+#include "VideoCommon/GraphicsTriggerManager.h"
+#include "VideoCommon/PEShaderSystem/Runtime/PETriggerPointManager.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/TextureConfig.h"
 
@@ -257,6 +259,9 @@ public:
 
   // Will forcibly reload all textures on the next swap
   void ForceReloadTextures();
+  
+  const VideoCommon::PE::TriggerPointManager& GetCustomShaderTriggerManager() const;
+  VideoCommon::PE::TriggerPointManager& GetCustomShaderTriggerManager();
 
 protected:
   // Bitmask containing information about which configuration has changed for the backend.
@@ -435,6 +440,9 @@ private:
   std::unique_ptr<NetPlayChatUI> m_netplay_chat_ui;
 
   Common::Flag m_force_reload_textures;
+  
+  VideoCommon::PE::TriggerPointManager m_custom_shader_trigger_manager;
+  GraphicsTriggerManager m_graphics_trigger_manager;
 };
 
 extern std::unique_ptr<Renderer> g_renderer;

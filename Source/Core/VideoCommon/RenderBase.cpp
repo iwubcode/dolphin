@@ -119,11 +119,18 @@ bool Renderer::Initialize()
   if (!InitializeImGui())
     return false;
 
+  m_graphics_trigger_manager.Load();
+  m_custom_shader_trigger_manager.Start();
+  m_custom_shader_trigger_manager.UpdateConfig(g_ActiveConfig.m_trigger_config,
+                                               m_graphics_trigger_manager);
+
   return true;
 }
 
 void Renderer::Shutdown()
 {
+  m_custom_shader_trigger_manager.Stop();
+
   // Disable ControllerInterface's aspect ratio adjustments so mapping dialog behaves normally.
   g_controller_interface.SetAspectRatioAdjustment(1);
 
@@ -302,6 +309,8 @@ void Renderer::RenderToXFB(u32 xfbAddr, const MathUtil::Rectangle<int>& sourceRc
 {
   CheckFifoRecording();
 
+  m_custom_shader_trigger_manager.ResetFrame();
+
   if (!fbStride || !fbHeight)
     return;
 }
@@ -438,6 +447,9 @@ void Renderer::CheckForConfigChanges()
   // EFB tile cache doesn't need to notify the backend.
   if (old_efb_access_tile_size != g_ActiveConfig.iEFBAccessTileSize)
     g_framebuffer_manager->SetEFBCacheTileSize(std::max(g_ActiveConfig.iEFBAccessTileSize, 0));
+
+  m_custom_shader_trigger_manager.UpdateConfig(g_ActiveConfig.m_trigger_config,
+                                               m_graphics_trigger_manager);
 
   // Determine which (if any) settings have changed.
   ShaderHostConfig new_host_config = ShaderHostConfig::GetCurrent();
@@ -1164,6 +1176,16 @@ void Renderer::ForceReloadTextures()
   m_force_reload_textures.Set();
 }
 
+const VideoCommon::PE::TriggerPointManager& Renderer::GetCustomShaderTriggerManager() const
+{
+  return m_custom_shader_trigger_manager;
+}
+
+VideoCommon::PE::TriggerPointManager& Renderer::GetCustomShaderTriggerManager()
+{
+  return m_custom_shader_trigger_manager;
+}
+
 // Heuristic to detect if a GameCube game is in 16:9 anamorphic widescreen mode.
 void Renderer::UpdateWidescreenHeuristic()
 {
@@ -1380,6 +1402,21 @@ void Renderer::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
                                  const AbstractTexture* source_texture,
                                  const MathUtil::Rectangle<int>& source_rc)
 {
+  if (g_ActiveConfig.stereo_mode == StereoMode::SBS ||
+      g_ActiveConfig.stereo_mode == StereoMode::TAB)
+  {
+    const auto [left_rc, right_rc] = ConvertStereoRectangle(target_rc);
+
+    m_custom_shader_trigger_manager.OnPost(VideoCommon::PE::TriggerParameters{
+        m_current_framebuffer, left_rc, source_texture, nullptr, source_rc, 0});
+    m_custom_shader_trigger_manager.OnPost(VideoCommon::PE::TriggerParameters{
+        m_current_framebuffer, left_rc, source_texture, nullptr, source_rc, 1});
+  }
+  else
+  {
+    m_custom_shader_trigger_manager.OnPost(VideoCommon::PE::TriggerParameters{
+        m_current_framebuffer, target_rc, source_texture, nullptr, source_rc, 0});
+  }
 }
 
 bool Renderer::IsFrameDumping() const
