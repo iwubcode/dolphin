@@ -5,6 +5,7 @@
 
 #include "DolphinQt/Config/Graphics/GraphicsWidget.h"
 
+class CustomShaderWindow;
 class GraphicsBool;
 class GraphicsChoice;
 class GraphicsSlider;
@@ -14,6 +15,7 @@ class QComboBox;
 class QPushButton;
 class QSlider;
 class ToolTipComboBox;
+class ToolTipPushButton;
 
 class EnhancementsWidget final : public GraphicsWidget
 {
@@ -42,6 +44,8 @@ private:
   GraphicsBool* m_force_24bit_color;
   GraphicsBool* m_disable_copy_filter;
   GraphicsBool* m_arbitrary_mipmap_detection;
+  ToolTipPushButton* m_pp_configure;
+  CustomShaderWindow* m_shader_window = nullptr;
 
   // Stereoscopy
   GraphicsChoice* m_3d_mode;

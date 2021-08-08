@@ -18,6 +18,8 @@
 #include "DolphinQt/Config/Graphics/GraphicsChoice.h"
 #include "DolphinQt/Config/Graphics/GraphicsSlider.h"
 #include "DolphinQt/Config/Graphics/GraphicsWindow.h"
+#include "DolphinQt/Config/Graphics/CustomShaderWindow.h"
+#include "DolphinQt/Config/ToolTipControls/ToolTipPushButton.h"
 #include "DolphinQt/Settings.h"
 
 #include "UICommon/VideoUtils.h"
@@ -87,6 +89,7 @@ void EnhancementsWidget::CreateWidgets()
       new GraphicsBool(tr("Disable Copy Filter"), Config::GFX_ENHANCE_DISABLE_COPY_FILTER);
   m_arbitrary_mipmap_detection = new GraphicsBool(tr("Arbitrary Mipmap Detection"),
                                                   Config::GFX_ENHANCE_ARBITRARY_MIPMAP_DETECTION);
+  m_pp_configure = new ToolTipPushButton(tr("Configure"));
 
   enhancements_layout->addWidget(new QLabel(tr("Internal Resolution:")), 0, 0);
   enhancements_layout->addWidget(m_ir_combo, 0, 1, 1, -1);
@@ -94,6 +97,9 @@ void EnhancementsWidget::CreateWidgets()
   enhancements_layout->addWidget(m_aa_combo, 1, 1, 1, -1);
   enhancements_layout->addWidget(new QLabel(tr("Anisotropic Filtering:")), 2, 0);
   enhancements_layout->addWidget(m_af_combo, 2, 1, 1, -1);
+
+  enhancements_layout->addWidget(new QLabel(tr("Post-Processing:")), 4, 0);
+  enhancements_layout->addWidget(m_pp_configure, 4, 1, 1, -1);
 
   enhancements_layout->addWidget(m_scaled_efb_copy, 5, 0);
   enhancements_layout->addWidget(m_per_pixel_lighting, 5, 1);
@@ -138,6 +144,14 @@ void EnhancementsWidget::ConnectWidgets()
           [this](int) { SaveSettings(); });
   connect(m_3d_mode, qOverload<int>(&QComboBox::currentIndexChanged), [this] {
     SaveSettings();
+  });
+  connect(m_pp_configure, &QPushButton::pressed, this, [this]() {
+
+    if (!m_shader_window)
+      m_shader_window = new CustomShaderWindow;
+    m_shader_window->show();
+    m_shader_window->raise();
+    m_shader_window->activateWindow();
   });
 }
 
