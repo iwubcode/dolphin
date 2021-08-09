@@ -2115,6 +2115,11 @@ void TextureCacheBase::CopyRenderTargetToTexture(
     copy_to_vram = false;
   }
 
+  if (!is_xfb_copy)
+  {
+    g_renderer->GetCustomShaderTriggerManager().OnEFB(srcRect, baseFormat);
+  }
+
   // We also linear filtering for both box filtering and downsampling higher resolutions to 1x.
   // TODO: This only produces perfect downsampling for 2x IR, other resolutions will need more
   //       complex down filtering to average all pixels and produce the correct result.
