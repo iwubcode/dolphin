@@ -151,6 +151,7 @@ Here's an example of generating a single image with the "A" and "B" Wiimote1 but
 
 ```js
 {
+    "specification": 2.0,
     "generated_folder_name": "MyDynamicTexturePack",
     "preserve_aspect_ratio": false,
     "output_textures":
@@ -159,7 +160,7 @@ Here's an example of generating a single image with the "A" and "B" Wiimote1 but
         {
             "image": "icons.png",
             "emulated_controls": {
-                "Wiimote1": {
+                "Wiimote1": [
                     {
                       "key": "Buttons/A",
                       "region": [0, 0, 30, 30]
@@ -172,10 +173,10 @@ Here's an example of generating a single image with the "A" and "B" Wiimote1 but
                       "key": "Buttons/B",
                       "region": [100, 342, 132, 374]
                     }
-                }
+                ]
             },
             "host_controls": {
-                "DInput/0/Keyboard Mouse": {
+                "DInput/0/Keyboard Mouse": [
                     {
                       "keys": ["A"],
                       "image": "keyboard/a.png"
@@ -184,8 +185,8 @@ Here's an example of generating a single image with the "A" and "B" Wiimote1 but
                       "keys": ["B"],
                       "image": "keyboard/b.png"
                     }
-                },
-                "XInput/0/Gamepad": {
+                ],
+                "XInput/0/Gamepad": [
                     {
                       "keys": ["`Button A`"],
                       "image": "gamepad/a.png"
@@ -194,7 +195,7 @@ Here's an example of generating a single image with the "A" and "B" Wiimote1 but
                       "keys": ["`Button B`"],
                       "image": "gamepad/b.png"
                     }
-                }
+                ]
             }
         }
     }
@@ -205,6 +206,7 @@ Here's the same example but the "A" button has a "pressed" state for one of its 
 
 ```js
 {
+    "specification": 2.0,
     "generated_folder_name": "MyDynamicTexturePack",
     "preserve_aspect_ratio": false,
     "output_textures":
@@ -213,7 +215,7 @@ Here's the same example but the "A" button has a "pressed" state for one of its 
         {
             "image": "icons.png",
             "emulated_controls": {
-                "Wiimote1": {
+                "Wiimote1": [
                     {
                       "key": "Buttons/A",
                       "region": [0, 0, 30, 30]
@@ -227,10 +229,10 @@ Here's the same example but the "A" button has a "pressed" state for one of its 
                       "key": "Buttons/B",
                       "region": [100, 342, 132, 374]
                     }
-                }
+                ]
             },
             "host_controls": {
-                "DInput/0/Keyboard Mouse": {
+                "DInput/0/Keyboard Mouse": [
                     {
                       "keys": ["A"],
                       "image": "keyboard/a.png"
@@ -244,8 +246,8 @@ Here's the same example but the "A" button has a "pressed" state for one of its 
                       "keys": ["B"],
                       "image": "keyboard/b.png"
                     }
-                },
-                "XInput/0/Gamepad": {
+                ],
+                "XInput/0/Gamepad": [
                     {
                       "keys": ["`Button A`"],
                       "image": "gamepad/a.png"
@@ -259,7 +261,7 @@ Here's the same example but the "A" button has a "pressed" state for one of its 
                       "keys": ["`Button B`"],
                       "image": "gamepad/b.png"
                     }
-                }
+                ]
             }
         }
     }
