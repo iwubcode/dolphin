@@ -88,7 +88,7 @@ Here is an example of a single key with a tag:
 
 The single key case works well when an image maps directly to Dolphin's emulated controller bindings.  However, what about the case where there is a dpad icon?  Dolphin has four mappings for that.  This is where a "bind_type" of ``multi`` is helpful.
 
-When binding a multi button icon, there are two scenarios.  1) The user has all the buttons mapped and there is a coorsponding host icon for that.  2) The user hasn't mapped all the buttons, so we must map each to a portion of the image.
+When binding a multi button icon, there are two scenarios.  1) The user has all the buttons mapped and there is a corresponding host icon for that.  2) The user hasn't mapped all the buttons, so we must map each to a portion of the image.
 
 Here's an example of that:
 
@@ -117,7 +117,7 @@ Here's an example of that:
           "bind_type": "single",
           "key": "D-Pad/Down",
           "region": [7.5, 30, 22.5, 45]
-      },
+      }
     ]
 }
 ```
@@ -272,6 +272,7 @@ As an example, you are writing a pack for a single-player game.  You may want to
 
 ```js
 {
+    "specification": 2.0,
     "preserve_aspect_ratio": false,
     "output_textures":
     {
@@ -279,22 +280,26 @@ As an example, you are writing a pack for a single-player game.  You may want to
         {
             "image": "icons.png",
             "emulated_controls": {
-                "Wiimote1":
-                {
-                    "Buttons/A": [
-                      [0, 0, 30, 30],
-                      [500, 550, 530, 580]
-                    ]
-                    "Buttons/B": [
-                      [100, 342, 132, 374]
-                    ]
-                }
+                "Wiimote1": [
+                  {
+                    "key": "Buttons/A",
+                    "region": [0, 0, 30, 30]
+                  },
+                  {
+                    "key": "Buttons/A",
+                    "region": [500, 550, 530, 580]
+                  },
+                  {
+                    "key": "Buttons/B"
+                    "region": [100, 342, 132, 374]
+                  }
+                ]
             },
             "host_controls": {
-                "": {
-                    "`Button X`": "ds4/x.png",
-                    "`Button Y`": "ds4/y.png"
-                }
+                "": [
+                    {"keys": ["`Button X`"], "image": "ds4/x.png"},
+                    {"keys": ["`Button Y`"], "image": "ds4/y.png"}
+                ]
             }
         }
     }
@@ -305,11 +310,12 @@ Here's an example of generating multiple images but using defaults from the glob
 
 ```js
 {
+    "specification": 2.0,
     "default_host_controls": {
-        "DInput/0/Keyboard Mouse": {
-            "A": "keyboard/a.png",
-            "B": "keyboard/b.png"
-        }
+        "DInput/0/Keyboard Mouse": [
+            {"keys": ["A"], "image": "keyboard/a.png"},
+            {"keys": ["B"], "image": "keyboard/b.png"}
+        ]
     },
     "default_device": "DInput/0/Keyboard Mouse",
     "output_textures":
@@ -318,53 +324,59 @@ Here's an example of generating multiple images but using defaults from the glob
         {
             "image": "icons1.png",
             "emulated_controls": {
-                "Wiimote1":
-                {
-                    "Buttons/A": [
-                      [62, 0, 102, 40]
-                    ]
-                    "Buttons/B": [
-                      [100, 342, 132, 374]
-                    ]
-                }
+                "Wiimote1": []
+                  {
+                      "key": "Buttons/A",
+                      "region": [62, 0, 102, 40]
+                  },
+                  {
+                      "key": "Buttons/B",
+                      "region": [100, 342, 132, 374]
+                  }
+                ]
             }
         },
         "tex1_21x26_5e71c27dad9cda76_3d76bd5d1e73c3b1_9.png":
         {
             "image": "icons2.png",
             "emulated_controls": {
-                "Wiimote1":
-                {
-                    "Buttons/A": [
-                      [857, 682, 907, 732]
-                    ]
-                    "Buttons/B": [
-                      [100, 342, 132, 374]
-                    ]
-                }
+                "Wiimote1": [
+                    {
+                        "key": "Buttons/A",
+                        "region": [857, 682, 907, 732]
+                    },
+                    {
+                        "key" :"Buttons/B",
+                        "region": [100, 342, 132, 374]
+                    }
+                ]
             }
         },
         "tex1_24x24_003f3a17f66f1704_82848f47946caa41_9.png":
         {
             "image": "icons3.png",
             "emulated_controls": {
-                "Wiimote1":
-                {
-                    "Buttons/A": [
-                      [0, 0, 30, 30],
-                      [500, 550, 530, 580]
-                    ]
-                    "Buttons/B": [
-                      [100, 342, 132, 374]
-                    ]
-                }
+                "Wiimote1": [
+                    {
+                        "key": "Buttons/A",
+                        "region": [0, 0, 30, 30]
+                    },
+                    {
+                        "key": "Buttons/A",
+                        "region": [500, 550, 530, 580]
+                    },
+                    {
+                        "key": "Buttons/B",
+                        "region": [100, 342, 132, 374]
+                    }
+                ]
             },
             "host_controls":
             {
-                "DInput/0/Keyboard Mouse": {
-                    "A": "keyboard/a_special.png",
-                    "B": "keyboard/b.png"
-                }
+                "DInput/0/Keyboard Mouse": [
+                  {"keys": ["A"], "image": "keyboard/a_special.png"},
+                  {"keys": ["B"], "image": "keyboard/b.png"}
+                ]
             }
         }
     }
