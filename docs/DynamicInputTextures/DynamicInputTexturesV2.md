@@ -127,7 +127,28 @@ All the keys are first checked and if a match occurs, then the top ``region`` ab
 
 #### Host Keys
 
-At the moment, there is only a single host key type.
+At the moment, there is only a single host key type. Keys must match all elements of the ``keys`` array in order for a ``multi`` bind type to match. For instance, in the above example, the following host controls would match assuming normal bindings, while other orderings would not.
+
+```js
+{
+    "host_controls": {
+        "DInput/0/Keyboard Mouse": [
+            {
+              "keys": ["UP", "LEFT", "DOWN", "RIGHT"],
+              "tag": "dpad",
+              "image": "keyboard/wasd.png"
+            }
+        ],
+        "XInput/0/Gamepad": [
+            {
+              "keys": ["`Pad N`", "`Pad E`", "`Pad S`", "`Pad W`"],
+              "tag": "dpad",
+              "image": "gamepad/dpad.png"
+            }
+        ]
+    }
+}
+```
 
 #### Global fields in the JSON applied to all textures
 
