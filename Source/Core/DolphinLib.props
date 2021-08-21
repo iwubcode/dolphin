@@ -620,6 +620,8 @@
     <ClInclude Include="VideoCommon\FreeLookCamera.h" />
     <ClInclude Include="VideoCommon\GeometryShaderGen.h" />
     <ClInclude Include="VideoCommon\GeometryShaderManager.h" />
+    <ClInclude Include="VideoCommon\GraphicsTrigger.h" />
+    <ClInclude Include="VideoCommon\GraphicsTriggerManager.h" />
     <ClInclude Include="VideoCommon\GXPipelineTypes.h" />
     <ClInclude Include="VideoCommon\HiresTextures.h" />
     <ClInclude Include="VideoCommon\ImageWrite.h" />
@@ -1182,6 +1184,8 @@
     <ClCompile Include="VideoCommon\FreeLookCamera.cpp" />
     <ClCompile Include="VideoCommon\GeometryShaderGen.cpp" />
     <ClCompile Include="VideoCommon\GeometryShaderManager.cpp" />
+    <ClCompile Include="VideoCommon\GraphicsTrigger.cpp" />
+    <ClCompile Include="VideoCommon\GraphicsTriggerManager.cpp" />
     <ClCompile Include="VideoCommon\HiresTextures_DDSLoader.cpp" />
     <ClCompile Include="VideoCommon\HiresTextures.cpp" />
     <ClCompile Include="VideoCommon\IndexGenerator.cpp" />
