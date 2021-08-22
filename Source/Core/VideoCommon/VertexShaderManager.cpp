@@ -133,7 +133,7 @@ void VertexShaderManager::Dirty()
 
 // Syncs the shader constant buffers with xfmem
 // TODO: A cleaner way to control the matrices without making a mess in the parameters field
-void VertexShaderManager::SetConstants(const std::vector<TextureInfo>&)
+void VertexShaderManager::SetConstants(const std::vector<TextureInfo>& textures)
 {
   if (constants.missing_color_hex != g_ActiveConfig.iMissingColorValue)
   {
@@ -432,6 +432,8 @@ void VertexShaderManager::SetConstants(const std::vector<TextureInfo>&)
 
     if (g_freelook_camera.IsActive() && xfmem.projection.type == ProjectionType::Perspective)
       corrected_matrix *= g_freelook_camera.GetView();
+
+    g_renderer->GetCustomShaderTriggerManager().OnDraw(xfmem.projection.type, textures);
 
     memcpy(constants.projection.data(), corrected_matrix.data.data(), 4 * sizeof(float4));
 
