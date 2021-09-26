@@ -114,6 +114,13 @@ add_executable(dolphin-emu
   Config/Graphics/GraphicsWindow.h
   Config/Graphics/HacksWidget.cpp
   Config/Graphics/HacksWidget.h
+  Config/Graphics/PostProcessingAddShaderDialog.cpp
+  Config/Graphics/PostProcessingAddShaderDialog.h
+  Config/Graphics/PostProcessingAddShaderListWidget.cpp
+  Config/Graphics/PostProcessingAddShaderListWidget.h
+  Config/Graphics/PostProcessingShaderListWidget.cpp
+  Config/Graphics/PostProcessingShaderListWidget.h
+  Config/Graphics/PostProcessingShaderListWidget.h
   Config/Graphics/SoftwareRendererWidget.cpp
   Config/Graphics/SoftwareRendererWidget.h
   Config/InfoWidget.cpp
