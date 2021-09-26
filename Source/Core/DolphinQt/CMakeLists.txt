@@ -123,6 +123,20 @@ add_executable(dolphin-emu
   Config/Graphics/PostProcessingShaderListWidget.h
   Config/Graphics/SoftwareRendererWidget.cpp
   Config/Graphics/SoftwareRendererWidget.h
+  Config/Graphics/Trigger/GraphicsTriggerSelectionDialog.cpp
+  Config/Graphics/Trigger/GraphicsTriggerSelectionDialog.h
+  Config/Graphics/Trigger/GraphicsTriggerWidget.cpp
+  Config/Graphics/Trigger/GraphicsTriggerWidget.h
+  Config/Graphics/Trigger/GraphicsTriggerWindow.cpp
+  Config/Graphics/Trigger/GraphicsTriggerWindow.h
+  Config/Graphics/Trigger/NewDrawCall2DTriggerDialog.cpp
+  Config/Graphics/Trigger/NewDrawCall2DTriggerDialog.h
+  Config/Graphics/Trigger/NewDrawCall3DTriggerDialog.cpp
+  Config/Graphics/Trigger/NewDrawCall3DTriggerDialog.h
+  Config/Graphics/Trigger/NewEFBTriggerDialog.cpp
+  Config/Graphics/Trigger/NewEFBTriggerDialog.h
+  Config/Graphics/Trigger/NewTextureLoadTriggerDialog.cpp
+  Config/Graphics/Trigger/NewTextureLoadTriggerDialog.h
   Config/InfoWidget.cpp
   Config/InfoWidget.h
   Config/LogConfigWidget.cpp
