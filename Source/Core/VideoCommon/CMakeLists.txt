@@ -74,6 +74,10 @@ add_library(videocommon
   GeometryShaderGen.h
   GeometryShaderManager.cpp
   GeometryShaderManager.h
+  GraphicsTrigger.cpp
+  GraphicsTrigger.h
+  GraphicsTriggerManager.cpp
+  GraphicsTriggerManager.h
   HiresTextures.cpp
   HiresTextures.h
   HiresTextures_DDSLoader.cpp
