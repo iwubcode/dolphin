@@ -1,4 +1,39 @@
 add_library(videocommon
+  PEShaderSystem/Config/PEShaderConfig.cpp
+  PEShaderSystem/Config/PEShaderConfig.h
+  PEShaderSystem/Config/PEShaderConfigGroup.cpp
+  PEShaderSystem/Config/PEShaderConfigGroup.h
+  PEShaderSystem/Config/PEShaderConfigInput.cpp
+  PEShaderSystem/Config/PEShaderConfigInput.h
+  PEShaderSystem/Config/PEShaderConfigOption.cpp
+  PEShaderSystem/Config/PEShaderConfigOption.h
+  PEShaderSystem/Config/PEShaderConfigPass.cpp
+  PEShaderSystem/Config/PEShaderConfigPass.h
+  PEShaderSystem/Config/PETriggerConfig.cpp
+  PEShaderSystem/Config/PETriggerConfig.h
+  PEShaderSystem/Constants.h
+  PEShaderSystem/Runtime/BuiltinUniforms.cpp
+  PEShaderSystem/Runtime/BuiltinUniforms.h
+  PEShaderSystem/Runtime/PEBaseShader.cpp
+  PEShaderSystem/Runtime/PEBaseShader.h
+  PEShaderSystem/Runtime/PEBaseShaderPass.cpp
+  PEShaderSystem/Runtime/PEBaseShaderPass.h
+  PEShaderSystem/Runtime/PEComputeShader.cpp
+  PEShaderSystem/Runtime/PEComputeShader.h
+  PEShaderSystem/Runtime/PEComputeShaderPass.h
+  PEShaderSystem/Runtime/PEShader.cpp
+  PEShaderSystem/Runtime/PEShader.h
+  PEShaderSystem/Runtime/PEShaderApplyOptions.h
+  PEShaderSystem/Runtime/PEShaderGroup.cpp
+  PEShaderSystem/Runtime/PEShaderGroup.h
+  PEShaderSystem/Runtime/PEShaderInput.cpp
+  PEShaderSystem/Runtime/PEShaderInput.h
+  PEShaderSystem/Runtime/PEShaderOption.cpp
+  PEShaderSystem/Runtime/PEShaderOption.h
+  PEShaderSystem/Runtime/PEShaderPass.h
+  PEShaderSystem/Runtime/PETriggerPointManager.cpp
+  PEShaderSystem/Runtime/PETriggerPointManager.h
+  PEShaderSystem/Runtime/RuntimeShaderImpl.h
   AbstractFramebuffer.cpp
   AbstractFramebuffer.h
   AbstractShader.h
