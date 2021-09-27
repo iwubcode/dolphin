@@ -7,7 +7,7 @@
 #include <cmath>
 #include <variant>
 
-#include <QCheckbox>
+#include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
 #include <QGridLayout>
@@ -16,7 +16,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
-#include <QSpinbox>
+#include <QSpinBox>
 #include <QTabWidget>
 #include <QVBoxLayout>
 #include <QWidget>

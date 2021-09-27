@@ -16,7 +16,7 @@ namespace
 template <typename OptionType>
 bool ProcessNumeric(OptionType& option, const picojson::object& obj)
 {
-  using option_value_t = OptionType::ValueType;
+  using option_value_t = typename OptionType::ValueType;
   using element_type_t =
       std::remove_reference_t<decltype(*std::begin(std::declval<option_value_t&>()))>;
   const auto min_iter = obj.find("min");
@@ -623,7 +623,7 @@ void DeserializeOptionFromProfile(const picojson::object& obj, ShaderConfigOptio
           {
             if (values_serialized[i].is<double>())
             {
-              values[i] = static_cast<std::remove_reference<decltype(values[i])>::type>(
+              values[i] = static_cast<typename std::remove_reference<decltype(values[i])>::type>(
                   values_serialized[i].get<double>());
             }
           }

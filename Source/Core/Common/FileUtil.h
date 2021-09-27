@@ -12,13 +12,9 @@
 #include <sys/stat.h>
 
 #include "Common/CommonTypes.h"
-
-#ifdef _WIN32
 #include "Common/StringUtil.h"
-#endif
 
 #ifdef ANDROID
-#include "Common/StringUtil.h"
 #include "jni/AndroidCommon/AndroidCommon.h"
 #endif
 

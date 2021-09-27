@@ -95,6 +95,8 @@ add_executable(dolphin-emu
   Config/Graphics/AdvancedWidget.h
   Config/Graphics/BalloonTip.cpp
   Config/Graphics/BalloonTip.h
+  Config/Graphics/CustomShaderWindow.cpp
+  Config/Graphics/CustomShaderWindow.h
   Config/Graphics/EnhancementsWidget.cpp
   Config/Graphics/EnhancementsWidget.h
   Config/Graphics/GeneralWidget.cpp
@@ -103,6 +105,10 @@ add_executable(dolphin-emu
   Config/Graphics/GraphicsBool.h
   Config/Graphics/GraphicsChoice.cpp
   Config/Graphics/GraphicsChoice.h
+  Config/Graphics/GraphicsColor.cpp
+  Config/Graphics/GraphicsColor.h
+  Config/Graphics/GraphicsImage.cpp
+  Config/Graphics/GraphicsImage.h
   Config/Graphics/GraphicsInteger.cpp
   Config/Graphics/GraphicsInteger.h
   Config/Graphics/GraphicsRadio.cpp
@@ -119,7 +125,6 @@ add_executable(dolphin-emu
   Config/Graphics/PostProcessingAddShaderListWidget.cpp
   Config/Graphics/PostProcessingAddShaderListWidget.h
   Config/Graphics/PostProcessingShaderListWidget.cpp
-  Config/Graphics/PostProcessingShaderListWidget.h
   Config/Graphics/PostProcessingShaderListWidget.h
   Config/Graphics/SoftwareRendererWidget.cpp
   Config/Graphics/SoftwareRendererWidget.h
@@ -564,12 +569,12 @@ if(APPLE)
     add_custom_command(TARGET dolphin-emu
       POST_BUILD COMMAND
       /usr/bin/codesign -f -s "${MACOS_CODE_SIGNING_IDENTITY}" --deep --options=runtime --entitlements "${CMAKE_SOURCE_DIR}/Source/Core/DolphinQt/DolphinEmu$<$<CONFIG:Debug>:Debug>.entitlements" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/Dolphin.app" || true)
-    
+
     # Code sign builds for build systems that do have release/debug variants (Xcode)
     add_custom_command(TARGET dolphin-emu
       POST_BUILD COMMAND
       /usr/bin/codesign -f -s "${MACOS_CODE_SIGNING_IDENTITY}" --deep --options=runtime --entitlements "${CMAKE_SOURCE_DIR}/Source/Core/DolphinQt/DolphinEmuDebug.entitlements" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG}/Dolphin.app" || true)
-      
+
     add_custom_command(TARGET dolphin-emu
       POST_BUILD COMMAND
       /usr/bin/codesign -f -s "${MACOS_CODE_SIGNING_IDENTITY}" --deep --options=runtime --entitlements "${CMAKE_SOURCE_DIR}/Source/Core/DolphinQt/DolphinEmu.entitlements" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE}/Dolphin.app" || true)
