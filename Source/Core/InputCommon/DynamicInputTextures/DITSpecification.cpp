@@ -9,6 +9,17 @@
 #include "Common/IOFile.h"
 #include "Common/Logging/Log.h"
 #include "Core/ConfigManager.h"
+namespace fs = std::filesystem;
+
+namespace
+{
+std::string GetStreamAsString(std::ifstream& stream)
+{
+  std::stringstream ss;
+  ss << stream.rdbuf();
+  return ss.str();
+}
+}  // namespace
 
 namespace InputCommon::DynamicInputTextures
 {
@@ -150,7 +161,7 @@ std::optional<Data::EmulatedEntry> GetEmulatedEntry(const picojson::object& entr
   return std::nullopt;
 }
 
-std::optional<Data::HostEntry> GetHostEntry(const picojson::object& entry_obj,
+std::optional<Data::HostEntry> GetHostEntry(const picojson::object& entry_obj, std::string offset,
                                             std::string json_file)
 {
   const auto keys_json_array = GetJsonValueFromMap<picojson::array>(entry_obj, "keys", json_file);
@@ -179,7 +190,8 @@ std::optional<Data::HostEntry> GetHostEntry(const picojson::object& entry_obj,
   const auto path = GetJsonValueFromMap<std::string>(entry_obj, "image", json_file);
   if (!path)
     return std::nullopt;
-  entry.m_path = *path;
+
+  entry.m_path = offset + *path;
 
   return entry;
 }
@@ -404,9 +416,42 @@ bool ProcessSpecificationV2(picojson::value& root, std::vector<Data>& input_text
 
   const picojson::value& default_host_controls_json = root.get("default_host_controls");
   picojson::object default_host_controls;
+  std::string host_controls_path = base_path;
   if (default_host_controls_json.is<picojson::object>())
   {
     default_host_controls = default_host_controls_json.get<picojson::object>();
+  }
+  else if (default_host_controls_json.is<std::string>())
+  {
+    const std::string default_host_controls_full_path = base_path + default_host_controls_json.get<std::string>();
+    if (!File::Exists(default_host_controls_full_path))
+    {
+      ERROR_LOG_FMT(VIDEO,
+                    "Failed to load dynamic input json file '{}' because the json file '{}' "
+                    "could not be loaded",
+                    json_file, default_host_controls_full_path);
+      return false;
+    }
+    std::ifstream json_stream;
+    File::OpenFStream(json_stream, default_host_controls_full_path, std::ios_base::in);
+    if (!json_stream.is_open())
+    {
+      ERROR_LOG_FMT(VIDEO, "Failed to load dynamic input json file '{}'",
+                    default_host_controls_full_path);
+      return false;
+    }
+
+    picojson::value new_root;
+    const auto error = picojson::parse(new_root, GetStreamAsString(json_stream));
+
+    if (!error.empty())
+    {
+      ERROR_LOG_FMT(VIDEO, "Failed to load dynamic input json file '{}' due to parse error: {}",
+                    default_host_controls_full_path, error);
+      return false;
+    }
+    default_host_controls = new_root.get<picojson::object>();
+    SplitPath(default_host_controls_full_path, &host_controls_path, nullptr, nullptr);
   }
 
   const auto output_textures = output_textures_json.get<picojson::object>();
@@ -483,6 +528,7 @@ bool ProcessSpecificationV2(picojson::value& root, std::vector<Data>& input_text
     if (host_controls_json.is<picojson::object>())
     {
       host_controls = host_controls_json.get<picojson::object>();
+      host_controls_path = base_path;
     }
 
     if (host_controls.empty())
@@ -496,9 +542,40 @@ bool ProcessSpecificationV2(picojson::value& root, std::vector<Data>& input_text
 
     for (auto& [host_device, arr] : host_controls)
     {
+      std::string host_device_path = host_controls_path;
+      if (arr.is<std::string>())
+        const std::string host_device_full_path = host_controls_path + arr.get<std::string>();
+        SplitPath(host_device_full_path, &host_device_path, nullptr, nullptr);
+        if (!File::Exists(host_device_full_path))
+        {
+          ERROR_LOG_FMT(VIDEO,
+                        "Failed to load dynamic input json file '{}' because the json file '{}' "
+                        "could not be loaded",
+                        json_file, host_device_full_path);
+          return false;
+        }
+        std::ifstream json_stream;
+        File::OpenFStream(json_stream, host_device_full_path, std::ios_base::in);
+        if (!json_stream.is_open())
+        {
+          ERROR_LOG_FMT(VIDEO, "Failed to load dynamic input json file '{}'",
+                        host_device_full_path);
+          return false;
+        }
+
+        picojson::value new_root;
+        const auto error = picojson::parse(new_root, GetStreamAsString(json_stream));
+
+        if (!error.empty())
+        {
+          ERROR_LOG_FMT(VIDEO, "Failed to load dynamic input json file '{}' due to parse error: {}",
+                        host_device_full_path, error);
+          return false;
+        }
+        arr = new_root;
+      }
+
       if (!arr.is<picojson::array>())
-      {
-        ERROR_LOG_FMT(VIDEO,
                       "Failed to load dynamic input json file '{}' because 'host_controls' "
                       "map key '{}' is incorrect type.  Expected array",
                       json_file, host_device);
@@ -517,7 +594,11 @@ bool ProcessSpecificationV2(picojson::value& root, std::vector<Data>& input_text
               json_file, host_device);
           return false;
         }
-        const auto entry = GetHostEntry(entry_json.get<picojson::object>(), json_file);
+        // Account for relative file links
+        fs::path diff = fs::path(host_device_path).lexically_relative(fs::path(base_path));
+
+
+        const auto entry = GetHostEntry(entry_json.get<picojson::object>(), diff.string(), json_file);
         if (!entry)
         {
           return false;
