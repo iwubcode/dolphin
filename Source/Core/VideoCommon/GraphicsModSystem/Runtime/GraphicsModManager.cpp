@@ -128,6 +128,15 @@ GraphicsModManager::GetDrawStartedActions(const std::string& texture_name) const
     return it->second;
   }
 
+  if (!texture_name.starts_with("efb"))
+  {
+    if (const auto it = m_draw_started_target_to_actions.find("*");
+        it != m_draw_started_target_to_actions.end())
+    {
+      return it->second;
+    }
+  }
+
   return m_default;
 }
 
@@ -138,6 +147,15 @@ GraphicsModManager::GetTextureLoadActions(const std::string& texture_name) const
       it != m_load_texture_target_to_actions.end())
   {
     return it->second;
+  }
+
+  if (!texture_name.starts_with("efb"))
+  {
+    if (const auto it = m_load_texture_target_to_actions.find("*");
+        it != m_load_texture_target_to_actions.end())
+    {
+      return it->second;
+    }
   }
 
   return m_default;
