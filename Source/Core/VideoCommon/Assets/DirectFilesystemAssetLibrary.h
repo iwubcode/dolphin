@@ -23,6 +23,7 @@ public:
 
   LoadInfo LoadTexture(const AssetID& asset_id, CustomTextureData* data) override;
   LoadInfo LoadTextureWithMetadata(const AssetID& asset_id, TextureAndSamplerData* data) override;
+  LoadInfo LoadPixelShader(const AssetID& asset_id, PixelShaderData* data) override;
 
   // Gets the latest time from amongst all the files in the asset map
   TimeType GetLastAssetWriteTime(const AssetID& asset_id) const override;

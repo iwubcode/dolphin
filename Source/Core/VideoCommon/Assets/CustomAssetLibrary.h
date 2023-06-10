@@ -11,6 +11,7 @@
 namespace VideoCommon
 {
 class CustomTextureData;
+struct PixelShaderData;
 struct TextureAndSamplerData;
 
 // This class provides functionality to load
@@ -49,5 +50,8 @@ public:
 
   // Loads a texture with metadata
   virtual LoadInfo LoadTextureWithMetadata(const AssetID& asset_id, TextureAndSamplerData* data) = 0;
+
+  // Loads a pixel shader
+  virtual LoadInfo LoadPixelShader(const AssetID& asset_id, PixelShaderData* data) = 0;
 };
 }  // namespace VideoCommon
