@@ -1660,15 +1660,20 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
     if (hires_texture)
     {
       auto asset = hires_texture->GetAsset();
-      cached_game_assets.emplace_back(asset, asset->GetLastLoadedTime());
-      auto data = asset->GetData();
+      const auto loaded_time = asset->GetLastLoadedTime();
+      cached_game_assets.emplace_back(std::move(asset), loaded_time);
       has_arbitrary_mipmaps = hires_texture->HasArbitraryMipmaps();
-      if (data)
+    }
+  }
+
+  for (auto& cached_asset : cached_game_assets)
+  {
+    auto data = cached_asset.m_asset->GetData();
+    if (data)
+    {
+      if (cached_asset.m_asset->Validate(texture_info.GetRawWidth(), texture_info.GetRawHeight()))
       {
-        if (asset->Validate(texture_info.GetRawWidth(), texture_info.GetRawHeight()))
-        {
-          data_for_assets.push_back(std::move(data));
-        }
+        data_for_assets.push_back(std::move(data));
       }
     }
   }
