@@ -41,4 +41,7 @@ struct TextureLoad
   u32 texture_height;
   std::vector<VideoCommon::CustomTextureData*>* custom_textures;
 };
+struct TextureCreate
+{
+};
 }  // namespace GraphicsModActionData
