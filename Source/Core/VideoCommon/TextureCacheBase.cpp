@@ -272,6 +272,15 @@ bool TextureCacheBase::DidLinkedAssetsChange(const TCacheEntry& entry)
     }
   }
 
+  for (const auto& cached_asset : entry.linked_asset_dependencies)
+  {
+    if (cached_asset.m_asset)
+    {
+      if (cached_asset.m_asset->GetLastLoadedTime() > cached_asset.m_cached_write_time)
+        return true;
+    }
+  }
+
   return false;
 }
 
@@ -1666,6 +1675,7 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
     }
   }
 
+  std::vector<VideoCommon::CachedAsset<VideoCommon::CustomAsset>> additional_dependencies;
   for (auto& cached_asset : cached_game_assets)
   {
     auto data = cached_asset.m_asset->GetData();
@@ -1678,10 +1688,25 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
     }
   }
 
+  std::string texture_name = "";
+  if (g_ActiveConfig.bGraphicMods)
+  {
+    texture_name = texture_info.CalculateTextureName().GetFullName();
+    GraphicsModActionData::TextureCreate texture_load{
+        texture_name, texture_info.GetRawWidth(), texture_info.GetRawHeight(), &cached_game_assets,
+        &additional_dependencies};
+    for (const auto action : g_graphics_mod_manager->GetTextureCreateActions(texture_name))
+    {
+      action->OnTextureCreate(&texture_load);
+    }
+  }
+
   auto entry = CreateTextureEntry(
       TextureCreationInfo{base_hash, full_hash, bytes_per_block, palette_size}, texture_info,
       textureCacheSafetyColorSampleSize, std::move(data_for_assets), has_arbitrary_mipmaps);
   entry->linked_game_texture_assets = std::move(cached_game_assets);
+  entry->linked_asset_dependencies = std::move(additional_dependencies);
+  entry->texture_info_name = texture_name;
   return entry;
 }
 
