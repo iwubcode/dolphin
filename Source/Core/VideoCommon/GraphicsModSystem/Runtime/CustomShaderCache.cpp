@@ -212,6 +212,9 @@ void CustomShaderCache::AsyncCreatePipeline(const VideoCommon::GXUberPipelineUid
     {
       if (m_stages_ready)
       {
+        if (m_config.pixel_shader == nullptr || m_config.vertex_shader == nullptr)
+          return false;
+
         m_pipeline = g_gfx->CreatePipeline(m_config);
       }
       return true;
