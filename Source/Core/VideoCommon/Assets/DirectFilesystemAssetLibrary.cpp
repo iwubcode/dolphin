@@ -158,7 +158,7 @@ CustomAssetLibrary::LoadInfo DirectFilesystemAssetLibrary::LoadPixelShader(const
   const auto asset_map = GetAssetMapForID(asset_id);
 
   // Asset map for a pixel shader is the shader and some metadata
-  if (asset_map.size() == 2)
+  if (asset_map.size() != 2)
   {
     ERROR_LOG_FMT(VIDEO, "Asset '{}' expected to have two files mapped!", asset_id);
     return {};
@@ -166,13 +166,13 @@ CustomAssetLibrary::LoadInfo DirectFilesystemAssetLibrary::LoadPixelShader(const
 
   const auto metadata = asset_map.find("metadata");
   const auto shader = asset_map.find("shader");
-  if (metadata != asset_map.end())
+  if (metadata == asset_map.end())
   {
     ERROR_LOG_FMT(VIDEO, "Asset '{}' expected to have a metadata entry mapped!", asset_id);
     return {};
   }
 
-  if (shader != asset_map.end())
+  if (shader == asset_map.end())
   {
     ERROR_LOG_FMT(VIDEO, "Asset '{}' expected to have a shader entry mapped!", asset_id);
     return {};
