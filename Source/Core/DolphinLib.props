@@ -666,6 +666,7 @@
     <ClInclude Include="VideoCommon\GraphicsModSystem\Config\GraphicsTarget.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Config\GraphicsTargetGroup.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Constants.h" />
+    <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\Actions\CustomPipelineAction.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\Actions\CustomPixelShaderAction.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\Actions\MoveAction.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\Actions\PrintAction.h" />
@@ -1279,6 +1280,7 @@
     <ClCompile Include="VideoCommon\GraphicsModSystem\Config\GraphicsModGroup.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Config\GraphicsTarget.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Config\GraphicsTargetGroup.cpp" />
+    <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\Actions\CustomPipelineAction.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\Actions\CustomPixelShaderAction.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\Actions\MoveAction.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\Actions\PrintAction.cpp" />
