@@ -63,6 +63,12 @@ void CustomAssetLoader::Init()
                         ptr->GetAssetId());
         }
       }
+      else
+      {
+        std::lock_guard lk(m_asset_load_lock);
+        // If we fail to load the first time, still attempt to try again if the asset changes
+        m_assets_to_monitor.try_emplace(ptr->GetAssetId(), ptr);
+      }
     }
   });
 }
