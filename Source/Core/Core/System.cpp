@@ -34,8 +34,11 @@
 #include "IOS/USB/Emulated/Skylanders/Skylander.h"
 #include "IOS/USB/USBScanner.h"
 #include "VideoCommon/CommandProcessor.h"
+#include "VideoCommon/EmulatedGraphicsManager.h"
 #include "VideoCommon/Fifo.h"
 #include "VideoCommon/GeometryShaderManager.h"
+#include "VideoCommon/GraphicsModEditor/EditorMain.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModManager.h"
 #include "VideoCommon/PerformanceMetrics.h"
 #include "VideoCommon/PixelEngine.h"
 #include "VideoCommon/PixelShaderManager.h"
@@ -106,6 +109,9 @@ struct System::Impl
   FifoPlayer m_fifo_player;
   FifoRecorder m_fifo_recorder;
   Movie::MovieManager m_movie;
+  GraphicsModEditor::EditorMain m_graphics_mod_editor;
+  GraphicsModSystem::Runtime::GraphicsModManager m_graphics_mod_manager;
+  EmulatedGraphicsManager m_emulated_graphics_manager;
 };
 
 System::System() : m_impl{std::make_unique<Impl>(*this)}
@@ -349,6 +355,19 @@ VideoInterface::VideoInterfaceManager& System::GetVideoInterface() const
 VideoCommon::CustomResourceManager& System::GetCustomResourceManager() const
 {
   return m_impl->m_custom_resource_manager;
+}
+
+GraphicsModEditor::EditorMain& System::GetGraphicsModEditor() const
+{
+  return m_impl->m_graphics_mod_editor;
+}
+GraphicsModSystem::Runtime::GraphicsModManager& System::GetGraphicsModManager() const
+{
+  return m_impl->m_graphics_mod_manager;
+}
+EmulatedGraphicsManager& System::GetEmulatedGraphicsManager() const
+{
+  return m_impl->m_emulated_graphics_manager;
 }
 
 VideoEvents& System::GetVideoEvents() const
