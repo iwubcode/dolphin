@@ -24,4 +24,6 @@ public:
   virtual void OnTextureLoad(GraphicsModActionData::TextureLoad*) {}
   virtual void OnTextureCreate(GraphicsModActionData::TextureCreate*) {}
   virtual void OnFrameEnd() {}
+
+  virtual void DrawImGui() {}
 };
