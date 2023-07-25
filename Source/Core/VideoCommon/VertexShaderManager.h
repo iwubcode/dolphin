@@ -25,7 +25,7 @@ public:
 
   // constant management
   void SetProjectionMatrix(XFStateManager& xf_state_manager);
-  void SetConstants(std::span<const std::string> textures, XFStateManager& xf_state_manager);
+  void SetConstants(XFStateManager& xf_state_manager);
 
   // data: 3 floats representing the X, Y and Z vertex model coordinates and the posmatrix index.
   // out:  4 floats which will be initialized with the corresponding clip space coordinates
@@ -81,7 +81,5 @@ private:
   alignas(16) std::array<float, 16> m_projection_matrix;
 
   // track changes
-  bool m_projection_graphics_mod_change = false;
-
   Common::Matrix44 LoadProjectionMatrix();
 };
