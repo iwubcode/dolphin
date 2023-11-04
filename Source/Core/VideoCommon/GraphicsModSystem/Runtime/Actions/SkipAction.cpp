@@ -24,3 +24,8 @@ void SkipAction::BeforeEFB(GraphicsModActionData::PreEFB* efb)
 
   *efb->skip = true;
 }
+
+std::string SkipAction::GetFactoryName() const
+{
+  return "skip";
+}
