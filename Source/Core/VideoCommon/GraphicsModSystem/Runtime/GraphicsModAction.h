@@ -6,6 +6,7 @@
 #include <picojson.h>
 
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModActionData.h"
+#include "VideoCommon/GraphicsModSystem/Types.h"
 
 class GraphicsModAction
 {
@@ -18,16 +19,34 @@ public:
   GraphicsModAction& operator=(GraphicsModAction&&) = default;
 
   virtual void OnDrawStarted(GraphicsModActionData::DrawStarted*) {}
-  virtual void BeforeEFB(GraphicsModActionData::PreEFB*) {}
-  virtual void AfterEFB(GraphicsModActionData::PostEFB*) {}
-  virtual void BeforeXFB() {}
   virtual void OnProjection(GraphicsModActionData::Projection*) {}
   virtual void OnProjectionAndTexture(GraphicsModActionData::Projection*) {}
   virtual void OnTextureLoad(GraphicsModActionData::TextureLoad*) {}
   virtual void OnTextureCreate(GraphicsModActionData::TextureCreate*) {}
+  virtual void OnLight(GraphicsModActionData::Light*) {}
   virtual void OnFrameEnd() {}
+
+  // Legacy behavior
+  virtual void BeforeEFB(GraphicsModActionData::PreEFB*) {}
+  virtual void AfterEFB(GraphicsModActionData::PostEFB*) {}
+  virtual void BeforeXFB() {}
+  virtual void AfterXFB() {}
+
+  void SetID(u64 id) { m_id = id; }
+  u64 GetID() const { return m_id; }
+
+  void SetDrawCall(GraphicsModSystem::DrawCallID draw_call) { m_draw_call = draw_call; }
+  GraphicsModSystem::DrawCallID GetDrawCall() const { return m_draw_call; }
 
   virtual void DrawImGui() {}
   virtual void SerializeToConfig(picojson::object* obj) {}
   virtual std::string GetFactoryName() const { return ""; }
+
+  virtual Common::Matrix44* GetTransform() { return nullptr; }
+
+protected:
+  GraphicsModSystem::DrawCallID m_draw_call = GraphicsModSystem::DrawCallID::INVALID;
+
+private:
+  u64 m_id = 0;
 };
