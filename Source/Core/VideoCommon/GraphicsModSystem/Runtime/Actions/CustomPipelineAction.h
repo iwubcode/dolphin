@@ -27,6 +27,10 @@ public:
   void OnDrawStarted(GraphicsModActionData::DrawStarted*) override;
   void AfterEFB(GraphicsModActionData::PostEFB*) override;
 
+  void DrawImGui() override;
+  void SerializeToConfig(picojson::object* obj) override;
+  std::string GetFactoryName() const override;
+
 private:
   std::shared_ptr<VideoCommon::CustomAssetLibrary> m_library;
   std::string m_material_asset;
