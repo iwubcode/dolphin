@@ -3,10 +3,16 @@
 
 #include "VideoCommon/GraphicsModSystem/Runtime/Actions/CustomPipelineAction.h"
 
+#include <imgui.h>
+#include <misc/cpp/imgui_stdlib.h>
+
 #include "Common/JsonUtil.h"
 #include "Common/Logging/Log.h"
 #include "Core/System.h"
 
+#include "VideoCommon/GraphicsModEditor/Controls/AssetDisplay.h"
+#include "VideoCommon/GraphicsModEditor/EditorEvents.h"
+#include "VideoCommon/GraphicsModEditor/EditorMain.h"
 #include "VideoCommon/Resources/CustomResourceManager.h"
 
 std::unique_ptr<CustomPipelineAction>
@@ -42,9 +48,20 @@ CustomPipelineAction::CustomPipelineAction(std::shared_ptr<VideoCommon::CustomAs
 {
 }
 
-void CustomPipelineAction::OnDrawStarted(GraphicsModActionData::DrawStarted*)
+void CustomPipelineAction::OnDrawStarted(GraphicsModActionData::DrawStarted* draw_started)
 {
-  // TODO
+  if (!draw_started) [[unlikely]]
+    return;
+
+  if (!draw_started->material) [[unlikely]]
+    return;
+
+  if (m_material_asset.empty())
+    return;
+
+  auto& resource_manager = Core::System::GetInstance().GetCustomResourceManager();
+  *draw_started->material = resource_manager.GetMaterialFromAsset(
+      m_material_asset, *draw_started->draw_data_view.uid, m_library);
 }
 
 void CustomPipelineAction::AfterEFB(GraphicsModActionData::PostEFB* post_efb)
@@ -58,4 +75,40 @@ void CustomPipelineAction::AfterEFB(GraphicsModActionData::PostEFB* post_efb)
   auto& resource_manager = Core::System::GetInstance().GetCustomResourceManager();
   post_efb->material =
       resource_manager.GetPostProcessingMaterialFromAsset(m_material_asset, m_library);
+}
+
+void CustomPipelineAction::DrawImGui()
+{
+  auto& editor = Core::System::GetInstance().GetGraphicsModEditor();
+  if (ImGui::CollapsingHeader("Custom pipeline", ImGuiTreeNodeFlags_DefaultOpen))
+  {
+    if (ImGui::BeginTable("CustomPipelineForm", 2))
+    {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Material");
+      ImGui::TableNextColumn();
+      if (GraphicsModEditor::Controls::AssetDisplay("CustomPipelineActionMaterial",
+                                                    editor.GetEditorState(), &m_material_asset,
+                                                    GraphicsModEditor::Material))
+      {
+        GraphicsModEditor::GetEditorEvents().asset_reload_event.Trigger(m_material_asset);
+      }
+      ImGui::EndTable();
+    }
+  }
+}
+
+void CustomPipelineAction::SerializeToConfig(picojson::object* obj)
+{
+  if (!obj) [[unlikely]]
+    return;
+
+  auto& json_obj = *obj;
+  json_obj["material_asset"] = picojson::value{m_material_asset};
+}
+
+std::string CustomPipelineAction::GetFactoryName() const
+{
+  return "custom_pipeline";
 }
