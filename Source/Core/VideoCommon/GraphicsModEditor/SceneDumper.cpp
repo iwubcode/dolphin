@@ -4,6 +4,7 @@
 #include "VideoCommon/GraphicsModEditor/SceneDumper.h"
 
 #include <array>
+#include <map>
 #include <string>
 
 #include <fmt/format.h>
@@ -12,6 +13,7 @@
 #include "Common/EnumUtils.h"
 
 #include "VideoCommon/AbstractTexture.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModBackend.h"
 #include "VideoCommon/TextureUtils.h"
 #include "VideoCommon/VideoEvents.h"
 
@@ -105,16 +107,23 @@ struct SceneDumper::SceneDumperImpl
     m_model.asset.generator = "Dolphin emulator";
   }
 
-  tinygltf::Scene m_scene;
+  std::map<std::string, tinygltf::Scene, std::less<>> m_xfb_hash_to_scene;
+  tinygltf::Scene m_current_scene;
   tinygltf::Model m_model;
-  void SaveSceneToFile(const std::string& path)
+  void SaveScenesToFile(const std::string& path, std::span<std::string> xfbs_presented)
   {
     const bool embed_images = false;
     const bool embed_buffers = false;
     const bool pretty_print = true;
     const bool write_binary = false;
 
-    m_model.scenes.push_back(m_scene);
+    for (const auto& xfb_presented : xfbs_presented)
+    {
+      if (const auto it = m_xfb_hash_to_scene.find(xfb_presented); it != m_xfb_hash_to_scene.end())
+      {
+        m_model.scenes.push_back(it->second);
+      }
+    }
 
     tinygltf::TinyGLTF gltf;
     gltf.WriteGltfSceneToFile(&m_model, path, embed_images, embed_buffers, pretty_print,
@@ -125,22 +134,18 @@ struct SceneDumper::SceneDumperImpl
 SceneDumper::SceneDumper()
 {
   m_impl = std::make_unique<SceneDumperImpl>();
-
-  // Note: ideally we'd use begin/end frame for this logic, however, determining
-  // real end of frame is difficult for some games that use multiple XFBs
-  // The current approach may dump duplicated objects based on when the present is triggered
-  // but we at least know everything requested is accounted for
-  m_frame_end = AfterPresentEvent::Register([this](auto& present) { OnFrameEnd(); }, "SceneDumper");
 }
 
 SceneDumper::~SceneDumper() = default;
 
-bool SceneDumper::IsDrawCallInRecording(GraphicsMods::DrawCallID draw_call_id) const
+bool SceneDumper::IsDrawCallInRecording(GraphicsModSystem::DrawCallID draw_call_id) const
 {
   return m_record_request.m_draw_call_ids.contains(draw_call_id);
 }
 
-void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, DrawData draw_data)
+void SceneDumper::AddDataToRecording(GraphicsModSystem::DrawCallID draw_call_id,
+                                     const GraphicsModSystem::DrawData& draw_data,
+                                     AdditionalDrawData additional_draw_data)
 {
   const auto& declaration = draw_data.vertex_format->GetVertexDeclaration();
 
@@ -150,7 +155,7 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
 
   // Initial primitive data
   tinygltf::Primitive primitive;
-  primitive.mode = PrimitiveTypeToMode(draw_data.primitive_type);
+  primitive.mode = PrimitiveTypeToMode(draw_data.rasterization_state.primitive);
   primitive.indices = static_cast<int>(m_impl->m_model.accessors.size());
 
   u32 available_texcoords = 0;
@@ -189,7 +194,7 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
     std::string texture_material_name = "";
     for (const auto& texture : draw_data.textures)
     {
-      texture_material_name += texture.name;
+      texture_material_name += texture.hash_name;
     }
     if (const auto iter = m_materialhash_to_material_id.find(texture_material_name);
         iter != m_materialhash_to_material_id.end())
@@ -202,7 +207,7 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
       material.pbrMetallicRoughness.baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
       material.doubleSided = true;
       material.name = texture_material_name;
-      if (draw_data.enable_blending && m_record_request.m_enable_blending)
+      if (draw_data.blending_state.blendenable && m_record_request.m_enable_blending)
       {
         material.alphaMode = "BLEND";
       }
@@ -213,28 +218,28 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
           break;
         }
 
-        if (const auto texture_iter = m_texturehash_to_texture_id.find(texture.name);
+        if (const auto texture_iter = m_texturehash_to_texture_id.find(texture.hash_name);
             texture_iter != m_texturehash_to_texture_id.end())
         {
           material.pbrMetallicRoughness.baseColorTexture.index = texture_iter->second;
         }
         else
         {
-          VideoCommon::TextureUtils::DumpTexture(*texture.texture, std::string{texture.name}, 0,
-                                                 false);
+          VideoCommon::TextureUtils::DumpTexture(*texture.texture_data,
+                                                 std::string{texture.hash_name}, 0, false);
 
           tinygltf::Texture tinygltf_texture;
           tinygltf_texture.source = static_cast<int>(m_impl->m_model.images.size());
 
           tinygltf::Image image;
-          image.uri = fmt::format("{}.png", texture.name);
+          image.uri = fmt::format("{}.png", texture.hash_name);
           m_impl->m_model.images.push_back(image);
 
           material.pbrMetallicRoughness.baseColorTexture.index =
               static_cast<int>(m_impl->m_model.textures.size());
           m_impl->m_model.textures.push_back(tinygltf_texture);
 
-          m_texturehash_to_texture_id[std::string{texture.name}] =
+          m_texturehash_to_texture_id[std::string{texture.hash_name}] =
               material.pbrMetallicRoughness.baseColorTexture.index;
         }
       }
@@ -251,10 +256,10 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
   index_accessor.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT;
   index_accessor.byteOffset = 0;
   index_accessor.type = TINYGLTF_TYPE_SCALAR;
-  index_accessor.count = draw_data.num_indices;
+  index_accessor.count = draw_data.index_data.size();
 
-  auto indice_ptr = reinterpret_cast<const u8*>(draw_data.indices);
-  for (u64 indice_index = 0; indice_index < draw_data.num_indices; indice_index++)
+  auto indice_ptr = reinterpret_cast<const u8*>(draw_data.index_data.data());
+  for (std::size_t indice_index = 0; indice_index < draw_data.index_data.size(); indice_index++)
   {
     u16 index = 0;
     std::memcpy(&index, indice_ptr + index_accessor.byteOffset, sizeof(u16));
@@ -289,20 +294,25 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
 
   tinygltf::BufferView index_buffer_view;
   index_buffer_view.buffer = static_cast<int>(m_impl->m_model.buffers.size());
-  index_buffer_view.byteLength = draw_data.num_indices * sizeof(u16);
+  index_buffer_view.byteLength = draw_data.index_data.size() * sizeof(u16);
   index_buffer_view.byteOffset = 0;
   index_buffer_view.target = TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER;
   m_impl->m_model.bufferViews.push_back(std::move(index_buffer_view));
 
   tinygltf::Buffer index_buffer;
 
-  const auto index_data = reinterpret_cast<const unsigned char*>(draw_data.indices);
+  const auto index_data = reinterpret_cast<const unsigned char*>(draw_data.index_data.data());
   index_buffer.data = {index_data, index_data + index_buffer_view.byteLength};
   m_impl->m_model.buffers.push_back(std::move(index_buffer));
 
   // Fill out all vertex data
   const std::size_t stride = declaration.stride;
 
+  if (m_record_request.m_apply_gpu_skinning && declaration.posmtx.enable)
+  {
+  }
+
+  Common::Vec3 origin_skinned;
   if (declaration.position.enable)
   {
     primitive.attributes["POSITION"] = static_cast<int>(m_impl->m_model.accessors.size());
@@ -314,58 +324,180 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
                                                                       declaration.position.integer);
     accessor.byteOffset = declaration.position.offset;
     accessor.type = ComponentCountToType(declaration.position.components);
-    accessor.count = draw_data.num_vertices;
+    accessor.count = draw_data.vertex_data.size();
 
-    auto vert_ptr = reinterpret_cast<const u8*>(draw_data.vertices);
-    for (u64 vert_index = 0; vert_index < draw_data.num_vertices; vert_index++)
+    auto vert_ptr = reinterpret_cast<const u8*>(draw_data.vertex_data.data());
+
+    // If gpu skinning is turned on but transforms is turned off, we need to calculate
+    // what the positions are when centered at the origin
+    std::optional<Common::Vec3> min_position_skinned;
+    std::optional<Common::Vec3> max_position_skinned;
+    if (m_record_request.m_apply_gpu_skinning && !m_record_request.m_include_transform &&
+        !draw_data.gpu_skinning_position_transform.empty() && declaration.posmtx.enable)
     {
-      float vx = 0;
-      std::memcpy(&vx, vert_ptr + accessor.byteOffset, sizeof(float));
+      for (std::size_t vert_index = 0; vert_index < draw_data.vertex_data.size(); vert_index++)
+      {
+        Common::Vec3 vertex_position;
+        std::memcpy(&vertex_position.x, vert_ptr + accessor.byteOffset, sizeof(float));
+        std::memcpy(&vertex_position.y, vert_ptr + sizeof(float) + accessor.byteOffset,
+                    sizeof(float));
+        std::memcpy(&vertex_position.z, vert_ptr + sizeof(float) * 2 + accessor.byteOffset,
+                    sizeof(float));
 
-      float vy = 0;
-      std::memcpy(&vy, vert_ptr + sizeof(float) + accessor.byteOffset, sizeof(float));
+        u32 gpu_skin_index;
+        std::memcpy(&gpu_skin_index, vert_ptr + declaration.posmtx.offset, sizeof(u32));
 
-      float vz = 0;
-      std::memcpy(&vz, vert_ptr + sizeof(float) * 2 + accessor.byteOffset, sizeof(float));
+        Common::Matrix44 position_transform;
+        for (std::size_t i = 0; i < 3; i++)
+        {
+          position_transform.data[i * 4 + 0] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_index + i][0];
+          position_transform.data[i * 4 + 1] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_index + i][1];
+          position_transform.data[i * 4 + 2] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_index + i][2];
+          position_transform.data[i * 4 + 3] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_index + i][3];
+        }
+        position_transform.data[12] = 0;
+        position_transform.data[13] = 0;
+        position_transform.data[14] = 0;
+        position_transform.data[15] = 1;
+
+        // Apply the transform to the position
+        Common::Vec4 vp(vertex_position, 1);
+        vp = position_transform * vp;
+        vertex_position.x = vp.x;
+        vertex_position.y = vp.y;
+        vertex_position.z = vp.z;
+
+        if (!min_position_skinned)
+        {
+          min_position_skinned = vertex_position;
+        }
+        else
+        {
+          if (vertex_position.x < min_position_skinned->x)
+            min_position_skinned->x = vertex_position.x;
+          if (vertex_position.y < min_position_skinned->y)
+            min_position_skinned->y = vertex_position.y;
+          if (vertex_position.z < min_position_skinned->z)
+            min_position_skinned->z = vertex_position.z;
+        }
+
+        if (!max_position_skinned)
+        {
+          max_position_skinned = vertex_position;
+        }
+        else
+        {
+          if (vertex_position.x > max_position_skinned->x)
+            max_position_skinned->x = vertex_position.x;
+          if (vertex_position.y > max_position_skinned->y)
+            max_position_skinned->y = vertex_position.y;
+          if (vertex_position.z > max_position_skinned->z)
+            max_position_skinned->z = vertex_position.z;
+        }
+        vert_ptr += stride;
+      }
+    }
+    if (min_position_skinned && max_position_skinned)
+    {
+      origin_skinned = (*max_position_skinned - *min_position_skinned) / 2.0f;
+    }
+    else if (min_position_skinned)
+    {
+      origin_skinned = -*min_position_skinned / 2.0f;
+    }
+    else if (max_position_skinned)
+    {
+      origin_skinned = *max_position_skinned / 2.0f;
+    }
+
+    vert_ptr = reinterpret_cast<const u8*>(draw_data.vertex_data.data());
+    for (std::size_t vert_index = 0; vert_index < draw_data.vertex_data.size(); vert_index++)
+    {
+      Common::Vec3 vertex_position;
+      std::memcpy(&vertex_position.x, vert_ptr + accessor.byteOffset, sizeof(float));
+      std::memcpy(&vertex_position.y, vert_ptr + sizeof(float) + accessor.byteOffset,
+                  sizeof(float));
+      std::memcpy(&vertex_position.z, vert_ptr + sizeof(float) * 2 + accessor.byteOffset,
+                  sizeof(float));
+
+      if (m_record_request.m_apply_gpu_skinning &&
+          !draw_data.gpu_skinning_position_transform.empty() && declaration.posmtx.enable)
+      {
+        u32 gpu_skin_index;
+        std::memcpy(&gpu_skin_index, vert_ptr + declaration.posmtx.offset, sizeof(u32));
+
+        Common::Matrix44 position_transform;
+        for (std::size_t i = 0; i < 3; i++)
+        {
+          position_transform.data[i * 4 + 0] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_index + i][0];
+          position_transform.data[i * 4 + 1] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_index + i][1];
+          position_transform.data[i * 4 + 2] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_index + i][2];
+          position_transform.data[i * 4 + 3] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_index + i][3];
+        }
+        position_transform.data[12] = 0;
+        position_transform.data[13] = 0;
+        position_transform.data[14] = 0;
+        position_transform.data[15] = 1;
+
+        // Apply the transform to the position
+        Common::Vec4 vp(vertex_position, 1);
+        vp = position_transform * vp;
+        vertex_position.x = vp.x;
+        vertex_position.y = vp.y;
+        vertex_position.z = vp.z;
+
+        if (!m_record_request.m_include_transform)
+        {
+          vertex_position -= origin_skinned;
+        }
+      }
 
       if (accessor.minValues.empty())
       {
-        accessor.minValues.push_back(static_cast<double>(vx));
-        accessor.minValues.push_back(static_cast<double>(vy));
-        accessor.minValues.push_back(static_cast<double>(vz));
+        accessor.minValues.push_back(static_cast<double>(vertex_position.x));
+        accessor.minValues.push_back(static_cast<double>(vertex_position.y));
+        accessor.minValues.push_back(static_cast<double>(vertex_position.z));
       }
       else
       {
-        float last_min_x = static_cast<float>(accessor.minValues[0]);
-        float last_min_y = static_cast<float>(accessor.minValues[1]);
-        float last_min_z = static_cast<float>(accessor.minValues[2]);
+        const float last_min_x = static_cast<float>(accessor.minValues[0]);
+        const float last_min_y = static_cast<float>(accessor.minValues[1]);
+        const float last_min_z = static_cast<float>(accessor.minValues[2]);
 
-        if (vx < last_min_x)
-          accessor.minValues[0] = vx;
-        if (vy < last_min_y)
-          accessor.minValues[1] = vy;
-        if (vz < last_min_z)
-          accessor.minValues[2] = vz;
+        if (vertex_position.x < last_min_x)
+          accessor.minValues[0] = vertex_position.x;
+        if (vertex_position.y < last_min_y)
+          accessor.minValues[1] = vertex_position.y;
+        if (vertex_position.z < last_min_z)
+          accessor.minValues[2] = vertex_position.z;
       }
 
       if (accessor.maxValues.empty())
       {
-        accessor.maxValues.push_back(static_cast<double>(vx));
-        accessor.maxValues.push_back(static_cast<double>(vy));
-        accessor.maxValues.push_back(static_cast<double>(vz));
+        accessor.maxValues.push_back(static_cast<double>(vertex_position.x));
+        accessor.maxValues.push_back(static_cast<double>(vertex_position.y));
+        accessor.maxValues.push_back(static_cast<double>(vertex_position.z));
       }
       else
       {
-        float last_max_x = static_cast<float>(accessor.maxValues[0]);
-        float last_max_y = static_cast<float>(accessor.maxValues[1]);
-        float last_max_z = static_cast<float>(accessor.maxValues[2]);
+        const float last_max_x = static_cast<float>(accessor.maxValues[0]);
+        const float last_max_y = static_cast<float>(accessor.maxValues[1]);
+        const float last_max_z = static_cast<float>(accessor.maxValues[2]);
 
-        if (vx > last_max_x)
-          accessor.maxValues[0] = vx;
-        if (vy > last_max_y)
-          accessor.maxValues[1] = vy;
-        if (vz > last_max_z)
-          accessor.maxValues[2] = vz;
+        if (vertex_position.x > last_max_x)
+          accessor.maxValues[0] = vertex_position.x;
+        if (vertex_position.y > last_max_y)
+          accessor.maxValues[1] = vertex_position.y;
+        if (vertex_position.z > last_max_z)
+          accessor.maxValues[2] = vertex_position.z;
       }
       vert_ptr += stride;
     }
@@ -388,7 +520,7 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
           declaration.colors[i].type, declaration.colors[i].integer);
       accessor.byteOffset = declaration.colors[i].offset;
       accessor.type = ComponentCountToType(declaration.colors[i].components);
-      accessor.count = draw_data.num_vertices;
+      accessor.count = draw_data.vertex_data.size();
       accessor.normalized = declaration.colors[i].type == ComponentFormat::UByte ||
                             declaration.colors[i].type == ComponentFormat::UShort ||
                             declaration.colors[i].type == ComponentFormat::Byte ||
@@ -414,7 +546,7 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
           declaration.normals[i].type, declaration.normals[i].integer);
       accessor.byteOffset = declaration.normals[i].offset;
       accessor.type = ComponentCountToType(declaration.normals[i].components);
-      accessor.count = draw_data.num_vertices;
+      accessor.count = draw_data.vertex_data.size();
 
       m_impl->m_model.accessors.push_back(std::move(accessor));
     }
@@ -439,7 +571,7 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
           declaration.texcoords[i].type, declaration.texcoords[i].integer);
       accessor.byteOffset = declaration.texcoords[i].offset;
       accessor.type = ComponentCountToType(declaration.texcoords[i].components);
-      accessor.count = draw_data.num_vertices;
+      accessor.count = draw_data.vertex_data.size();
       accessor.normalized = declaration.texcoords[i].type == ComponentFormat::UByte ||
                             declaration.texcoords[i].type == ComponentFormat::UShort ||
                             declaration.texcoords[i].type == ComponentFormat::Byte ||
@@ -452,15 +584,103 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
   // Vertex buffer data
   tinygltf::BufferView vertex_buffer_view;
   vertex_buffer_view.buffer = static_cast<int>(m_impl->m_model.buffers.size());
-  vertex_buffer_view.byteLength = draw_data.num_vertices * stride;
+  vertex_buffer_view.byteLength = draw_data.vertex_data.size() * stride;
   vertex_buffer_view.byteOffset = 0;
   vertex_buffer_view.byteStride = stride;
   vertex_buffer_view.target = TINYGLTF_TARGET_ARRAY_BUFFER;
   m_impl->m_model.bufferViews.push_back(std::move(vertex_buffer_view));
 
   tinygltf::Buffer buffer;
-  const auto vert_data = static_cast<const unsigned char*>(draw_data.vertices);
+  const auto vert_data = static_cast<const unsigned char*>(draw_data.vertex_data.data());
   buffer.data = {vert_data, vert_data + vertex_buffer_view.byteLength};
+
+  // If gpu skinning is turned on but transforms is turned off, we need to calculate
+  // what the positions are when centered at the origin
+  if (m_record_request.m_apply_gpu_skinning && !draw_data.gpu_skinning_position_transform.empty() &&
+      declaration.posmtx.enable && declaration.position.enable)
+  {
+    auto vert_ptr = buffer.data.data();
+    for (std::size_t vert_index = 0; vert_index < draw_data.vertex_data.size(); vert_index++)
+    {
+      Common::Vec3 vertex_position;
+      std::memcpy(&vertex_position.x, vert_ptr + declaration.position.offset, sizeof(float));
+      std::memcpy(&vertex_position.y, vert_ptr + sizeof(float) + declaration.position.offset,
+                  sizeof(float));
+      std::memcpy(&vertex_position.z, vert_ptr + sizeof(float) * 2 + declaration.position.offset,
+                  sizeof(float));
+
+      u32 gpu_skin_index;
+      std::memcpy(&gpu_skin_index, vert_ptr + declaration.posmtx.offset, sizeof(u32));
+
+      Common::Matrix44 position_transform;
+      for (std::size_t i = 0; i < 3; i++)
+      {
+        position_transform.data[i * 4 + 0] =
+            draw_data.gpu_skinning_position_transform[gpu_skin_index + i][0];
+        position_transform.data[i * 4 + 1] =
+            draw_data.gpu_skinning_position_transform[gpu_skin_index + i][1];
+        position_transform.data[i * 4 + 2] =
+            draw_data.gpu_skinning_position_transform[gpu_skin_index + i][2];
+        position_transform.data[i * 4 + 3] =
+            draw_data.gpu_skinning_position_transform[gpu_skin_index + i][3];
+      }
+      position_transform.data[12] = 0;
+      position_transform.data[13] = 0;
+      position_transform.data[14] = 0;
+      position_transform.data[15] = 1;
+
+      // Apply the transform to the position
+      Common::Vec4 vp(vertex_position, 1);
+      vp = position_transform * vp;
+      vertex_position.x = vp.x;
+      vertex_position.y = vp.y;
+      vertex_position.z = vp.z;
+
+      if (!m_record_request.m_include_transform)
+      {
+        vertex_position -= origin_skinned;
+      }
+
+      std::memcpy(vert_ptr + declaration.position.offset, &vertex_position.x, sizeof(float));
+      std::memcpy(vert_ptr + sizeof(float) + declaration.position.offset, &vertex_position.y,
+                  sizeof(float));
+      std::memcpy(vert_ptr + sizeof(float) * 2 + declaration.position.offset, &vertex_position.z,
+                  sizeof(float));
+
+      if (declaration.normals[0].enable)
+      {
+        Common::Vec3 vertex_normal;
+        std::memcpy(&vertex_normal.x, vert_ptr + declaration.normals[0].offset, sizeof(float));
+        std::memcpy(&vertex_normal.y, vert_ptr + sizeof(float) + declaration.normals[0].offset,
+                    sizeof(float));
+        std::memcpy(&vertex_normal.z, vert_ptr + sizeof(float) * 2 + declaration.normals[0].offset,
+                    sizeof(float));
+
+        Common::Matrix33 normal_transform;
+        for (std::size_t i = 0; i < 3; i++)
+        {
+          normal_transform.data[i * 3 + 0] =
+              draw_data.gpu_skinning_normal_transform[gpu_skin_index + i][0];
+          normal_transform.data[i * 3 + 1] =
+              draw_data.gpu_skinning_normal_transform[gpu_skin_index + i][1];
+          normal_transform.data[i * 3 + 2] =
+              draw_data.gpu_skinning_normal_transform[gpu_skin_index + i][2];
+        }
+
+        // Apply the transform to the normal
+        vertex_normal = normal_transform * vertex_normal;
+
+        // Save into output
+        std::memcpy(vert_ptr + declaration.normals[0].offset, &vertex_normal.x, sizeof(float));
+        std::memcpy(vert_ptr + sizeof(float) + declaration.normals[0].offset, &vertex_normal.y,
+                    sizeof(float));
+        std::memcpy(vert_ptr + sizeof(float) * 2 + declaration.normals[0].offset, &vertex_normal.z,
+                    sizeof(float));
+      }
+
+      vert_ptr += stride;
+    }
+  }
 
   m_impl->m_model.buffers.push_back(std::move(buffer));
 
@@ -470,7 +690,7 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
   node.mesh = static_cast<int>(m_impl->m_model.meshes.size());
 
   // We expect to get data as a 3x3 if there's a global transform
-  if (m_record_request.m_include_transform && draw_data.transform.size() == 12)
+  if (m_record_request.m_include_transform && additional_draw_data.transform.size() == 12)
   {
     // GLTF expects to be passed a 4x4
     node.matrix.reserve(16);
@@ -479,7 +699,7 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
     {
       for (int h = 0; h < 3; h++)
       {
-        node.matrix.push_back(draw_data.transform[w + h * 4]);
+        node.matrix.push_back(additional_draw_data.transform[w + h * 4]);
       }
       if (w == 3)
       {
@@ -491,7 +711,7 @@ void SceneDumper::AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, Draw
       }
     }
   }
-  m_impl->m_scene.nodes.push_back(static_cast<int>(m_impl->m_model.nodes.size()));
+  m_impl->m_current_scene.nodes.push_back(static_cast<int>(m_impl->m_model.nodes.size()));
   m_impl->m_model.nodes.push_back(std::move(node));
 
   // Mesh data
@@ -513,26 +733,17 @@ bool SceneDumper::IsRecording() const
   return m_recording_state == RecordingState::IS_RECORDING;
 }
 
-void SceneDumper::OnFrameBegin()
+void SceneDumper::OnXFBCreated(const std::string& hash)
 {
-  if (m_recording_state == RecordingState::WANTS_RECORDING)
-  {
-    m_recording_state = RecordingState::IS_RECORDING;
-  }
+  m_impl->m_xfb_hash_to_scene.try_emplace(hash, std::move(m_impl->m_current_scene));
+  m_impl->m_current_scene = {};
 }
 
-void SceneDumper::OnFrameEnd()
+void SceneDumper::OnFramePresented(std::span<std::string> xfbs_presented)
 {
-  if (!m_saw_frame_end)
-  {
-    m_saw_frame_end = true;
-    OnFrameBegin();
-    return;
-  }
-
   if (m_recording_state == RecordingState::IS_RECORDING)
   {
-    m_impl->SaveSceneToFile(m_scene_save_path);
+    m_impl->SaveScenesToFile(m_scene_save_path, xfbs_presented);
     m_recording_state = RecordingState::NOT_RECORDING;
 
     // Release state
@@ -542,6 +753,9 @@ void SceneDumper::OnFrameEnd()
     m_impl = std::make_unique<SceneDumperImpl>();
   }
 
-  m_saw_frame_end = false;
+  if (m_recording_state == RecordingState::WANTS_RECORDING)
+  {
+    m_recording_state = RecordingState::IS_RECORDING;
+  }
 }
 }  // namespace GraphicsModEditor

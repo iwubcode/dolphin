@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "Common/CommonTypes.h"
-#include "Common/HookableEvent.h"
 #include "Common/SmallVector.h"
 
 #include "VideoCommon/GraphicsModSystem/Types.h"
@@ -20,6 +19,11 @@
 #include "VideoCommon/RenderState.h"
 
 class AbstractTexture;
+
+namespace GraphicsModSystem
+{
+struct DrawData;
+}
 
 namespace GraphicsModEditor
 {
@@ -29,42 +33,31 @@ public:
   SceneDumper();
   ~SceneDumper();
 
-  struct DrawData
+  struct AdditionalDrawData
   {
-    const void* vertices;
-    u32 num_vertices;
-    const u16* indices;
-    u32 num_indices;
-    NativeVertexFormat* vertex_format;
-    PrimitiveType primitive_type;
     std::span<float> transform;
-    struct Texture
-    {
-      AbstractTexture* texture;
-      std::string_view name;
-    };
-    bool enable_blending = false;
-    Common::SmallVector<Texture, 8> textures;
   };
-  bool IsDrawCallInRecording(GraphicsMods::DrawCallID draw_call_id) const;
-  void AddDataToRecording(GraphicsMods::DrawCallID draw_call_id, DrawData draw_data);
+  bool IsDrawCallInRecording(GraphicsModSystem::DrawCallID draw_call_id) const;
+  void AddDataToRecording(GraphicsModSystem::DrawCallID draw_call_id,
+                          const GraphicsModSystem::DrawData& draw_data,
+                          AdditionalDrawData additional_draw_data);
 
   struct RecordingRequest
   {
-    std::unordered_set<GraphicsMods::DrawCallID> m_draw_call_ids;
+    std::unordered_set<GraphicsModSystem::DrawCallID> m_draw_call_ids;
 
     bool m_enable_blending = false;
+    bool m_apply_gpu_skinning = true;
     bool m_include_transform = true;
     bool m_include_materials = true;
   };
   void Record(const std::string& path, const RecordingRequest& request);
   bool IsRecording() const;
 
-private:
-  void OnFrameBegin();
-  void OnFrameEnd();
+  void OnXFBCreated(const std::string& hash);
+  void OnFramePresented(std::span<std::string> xfbs_presented);
 
-  Common::EventHook m_frame_end;
+private:
   enum RecordingState
   {
     NOT_RECORDING,
