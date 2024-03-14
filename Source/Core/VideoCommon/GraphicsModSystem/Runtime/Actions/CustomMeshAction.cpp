@@ -159,13 +159,13 @@ void CustomMeshAction::OnDrawStarted(GraphicsModActionData::DrawStarted* draw_st
       PortableVertexDeclaration vertex_declaration = mesh_chunk.vertex_declaration;
       vertex_declaration.posmtx = draw_started->current_vertex_format.GetVertexDeclaration().posmtx;
       render_chunk.m_native_vertex_format = g_gfx->CreateNativeVertexFormat(vertex_declaration);
-      render_chunk.m_mesh_chunk.indices = mesh_chunk.indices.get();
-      render_chunk.m_mesh_chunk.num_indices = mesh_chunk.num_indices;
+      render_chunk.m_mesh_chunk.index_data =
+          std::span<u16>(mesh_chunk.indices.get(), mesh_chunk.num_indices);
+      render_chunk.m_mesh_chunk.vertex_data =
+          std::span<u8>(mesh_chunk.vertex_data.get(), mesh_chunk.num_vertices);
       render_chunk.m_mesh_chunk.vertex_format = render_chunk.m_native_vertex_format.get();
-      render_chunk.m_mesh_chunk.num_vertices = mesh_chunk.num_vertices;
       render_chunk.m_mesh_chunk.vertex_stride =
           render_chunk.m_native_vertex_format->GetVertexStride();
-      render_chunk.m_mesh_chunk.vertices = mesh_chunk.vertex_data.get();
       render_chunk.m_mesh_chunk.primitive_type = mesh_chunk.primitive_type;
       render_chunk.m_mesh_chunk.components_available = mesh_chunk.components_available;
 
