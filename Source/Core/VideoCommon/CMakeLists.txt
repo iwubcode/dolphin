@@ -80,6 +80,8 @@ add_library(videocommon
   GraphicsModEditor/Controls/TextureControl.h
   GraphicsModEditor/EditorAssetSource.cpp
   GraphicsModEditor/EditorAssetSource.h
+  GraphicsModEditor/EditorBackend.cpp
+  GraphicsModEditor/EditorBackend.h
   GraphicsModEditor/EditorEvents.h
   GraphicsModEditor/EditorMain.cpp
   GraphicsModEditor/EditorMain.h
@@ -96,16 +98,18 @@ add_library(videocommon
   GraphicsModEditor/SceneDumper.h
   GraphicsModSystem/Config/GraphicsMod.cpp
   GraphicsModSystem/Config/GraphicsMod.h
+  GraphicsModSystem/Config/GraphicsModAction.cpp
+  GraphicsModSystem/Config/GraphicsModAction.h
   GraphicsModSystem/Config/GraphicsModAsset.cpp
   GraphicsModSystem/Config/GraphicsModAsset.h
-  GraphicsModSystem/Config/GraphicsModFeature.cpp
-  GraphicsModSystem/Config/GraphicsModFeature.h
   GraphicsModSystem/Config/GraphicsModGroup.cpp
   GraphicsModSystem/Config/GraphicsModGroup.h
+  GraphicsModSystem/Config/GraphicsModHashPolicy.cpp
+  GraphicsModSystem/Config/GraphicsModHashPolicy.h
+  GraphicsModSystem/Config/GraphicsModTag.cpp
+  GraphicsModSystem/Config/GraphicsModTag.h
   GraphicsModSystem/Config/GraphicsTarget.cpp
   GraphicsModSystem/Config/GraphicsTarget.h
-  GraphicsModSystem/Config/GraphicsTargetGroup.cpp
-  GraphicsModSystem/Config/GraphicsTargetGroup.h
   GraphicsModSystem/Constants.h
   GraphicsModSystem/Runtime/Actions/CustomMeshAction.cpp
   GraphicsModSystem/Runtime/Actions/CustomMeshAction.h
@@ -133,8 +137,14 @@ add_library(videocommon
   GraphicsModSystem/Runtime/GraphicsModActionData.h
   GraphicsModSystem/Runtime/GraphicsModActionFactory.cpp
   GraphicsModSystem/Runtime/GraphicsModActionFactory.h
+  GraphicsModSystem/Runtime/GraphicsModBackend.cpp
+  GraphicsModSystem/Runtime/GraphicsModBackend.h
+  GraphicsModSystem/Runtime/GraphicsModHash.cpp
+  GraphicsModSystem/Runtime/GraphicsModHash.h
   GraphicsModSystem/Runtime/GraphicsModManager.cpp
   GraphicsModSystem/Runtime/GraphicsModManager.h
+  GraphicsModSystem/Runtime/GraphicsModRuntimeBackend.cpp
+  GraphicsModSystem/Runtime/GraphicsModRuntimeBackend.h
   HiresTextures.cpp
   HiresTextures.h
   IndexGenerator.cpp
