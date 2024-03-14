@@ -42,6 +42,12 @@ bool ShowMeshExtractWindow(SceneDumper& scene_dumper, SceneDumper::RecordingRequ
     ImGui::SetItemTooltip("Include Transforms - writes the position, rotation, and scale of "
                           "each recorded object in the mesh output.");
 
+    ImGui::Checkbox("Apply GPU Skinning", &request.m_apply_gpu_skinning);
+    ImGui::SetItemTooltip("Apply GPU Skinning - if a mesh uses GPU skinning "
+                          " and this is disabled, mesh captured will contain whatever state "
+                          "defined by the game (some games may use a T pose or Rest pose), "
+                          "otherwise applies the transformation as visible when captured");
+
     if (ImGui::Button("Extract", ImVec2(120, 0)))
     {
       const std::string path_prefix =
