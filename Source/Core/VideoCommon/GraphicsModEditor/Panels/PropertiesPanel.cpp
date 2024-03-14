@@ -52,19 +52,22 @@ void PropertiesPanel::DrawImGui()
   }
   else if (m_selected_targets.size() == 1)
   {
-    std::visit(overloaded{[&](const GraphicsMods::DrawCallID& drawcallid) {
-                            DrawCallIDSelected(drawcallid);
-                          },
-                          [&](const FBInfo& fbid) { FBCallIDSelected(fbid); },
-                          [&](const GraphicsMods::LightID& light_id) { LightSelected(light_id); },
-                          [&](GraphicsModAction* action) { action->DrawImGui(); },
-                          [&](EditorAsset* asset_data) { AssetDataSelected(asset_data); }},
-               *m_selected_targets.begin());
+    std::visit(
+        overloaded{[&](const GraphicsModSystem::DrawCallID& drawcallid) {
+                     DrawCallIDSelected(drawcallid);
+                   },
+                   [&](const GraphicsModSystem::TextureCacheID& tcache_id) {
+                     TextureCacheIDSelected(tcache_id);
+                   },
+                   [&](const GraphicsModSystem::LightID& light_id) { LightSelected(light_id); },
+                   [&](GraphicsModAction* action) { action->DrawImGui(); },
+                   [&](EditorAsset* asset_data) { AssetDataSelected(asset_data); }},
+        *m_selected_targets.begin());
   }
   ImGui::End();
 }
 
-void PropertiesPanel::DrawCallIDSelected(const GraphicsMods::DrawCallID& selected_object)
+void PropertiesPanel::DrawCallIDSelected(const GraphicsModSystem::DrawCallID& selected_object)
 {
   const auto& data = m_state.m_runtime_data.m_draw_call_id_to_data[selected_object];
   auto& user_data = m_state.m_user_data.m_draw_call_id_to_user_data[selected_object];
@@ -94,20 +97,13 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsMods::DrawCallID& selecte
     ImGui::TableNextColumn();
     ImGui::Text("Projection Type");
     ImGui::TableNextColumn();
-    ImGui::Text("%s", fmt::format("{}", data.m_projection_type).c_str());
+    ImGui::Text("%s", fmt::format("{}", data.draw_data.projection_type).c_str());
 
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::Text("Cull Mode");
     ImGui::TableNextColumn();
-    ImGui::Text("%s", fmt::format("{}", data.m_cull_mode).c_str());
-
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::Text("World Position");
-    ImGui::TableNextColumn();
-    std::array<float, 4> test = data.m_world_position;
-    ImGui::InputFloat4("##BooYah", &test[0]);
+    ImGui::Text("%s", fmt::format("{}", data.draw_data.rasterization_state.cullmode).c_str());
 
     ImGui::EndTable();
   }
@@ -120,7 +116,7 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsMods::DrawCallID& selecte
       ImGui::TableNextColumn();
       ImGui::Text("Blend enabled?");
       ImGui::TableNextColumn();
-      if (data.m_blendenable)
+      if (data.draw_data.blending_state.blendenable)
         ImGui::Text("Yes");
       else
         ImGui::Text("No");
@@ -129,7 +125,7 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsMods::DrawCallID& selecte
       ImGui::TableNextColumn();
       ImGui::Text("Color update enabled?");
       ImGui::TableNextColumn();
-      if (data.m_colorupdate)
+      if (data.draw_data.blending_state.colorupdate)
         ImGui::Text("Yes");
       else
         ImGui::Text("No");
@@ -138,7 +134,7 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsMods::DrawCallID& selecte
       ImGui::TableNextColumn();
       ImGui::Text("Logicop update enabled?");
       ImGui::TableNextColumn();
-      if (data.m_logicopenable)
+      if (data.draw_data.blending_state.logicopenable)
         ImGui::Text("Yes");
       else
         ImGui::Text("No");
@@ -147,13 +143,13 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsMods::DrawCallID& selecte
       ImGui::TableNextColumn();
       ImGui::Text("Destination factor");
       ImGui::TableNextColumn();
-      ImGui::Text("%s", fmt::to_string(data.m_dstfactor).c_str());
+      ImGui::Text("%s", fmt::to_string(data.draw_data.blending_state.dstfactor).c_str());
 
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::Text("Source factor");
       ImGui::TableNextColumn();
-      ImGui::Text("%s", fmt::to_string(data.m_srcfactor).c_str());
+      ImGui::Text("%s", fmt::to_string(data.draw_data.blending_state.srcfactor).c_str());
 
       ImGui::EndTable();
     }
@@ -163,41 +159,40 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsMods::DrawCallID& selecte
   {
     if (ImGui::BeginTable("DrawTexturesForm", 2))
     {
-      for (const auto& texture_details : data.m_textures_details)
+      for (const auto& texture : data.draw_data.textures)
       {
-        if (texture_details.m_texture)
+        if (texture.texture_data)
         {
           ImGui::TableNextRow();
           ImGui::TableNextColumn();
-          ImGui::Text("Texture (%i)", texture_details.m_texture_unit);
+          ImGui::Text("Texture (%i)", texture.unit);
           ImGui::TableNextColumn();
 
           const float column_width = ImGui::GetContentRegionAvail().x;
-          float image_width = texture_details.m_texture->GetWidth();
-          float image_height = texture_details.m_texture->GetHeight();
+          float image_width = texture.texture_data->GetWidth();
+          float image_height = texture.texture_data->GetHeight();
           const float image_aspect_ratio = image_width / image_height;
 
           const float final_width = std::min(image_width * 4, column_width);
           image_width = final_width;
           image_height = final_width / image_aspect_ratio;
 
-          ImGui::ImageButton(texture_details.m_hash.data(), texture_details.m_texture,
+          ImGui::ImageButton(texture.hash_name.data(), texture.texture_data,
                              ImVec2{image_width, image_height});
           if (ImGui::BeginPopupContextItem())
           {
             if (ImGui::Selectable("Dump"))
             {
-              VideoCommon::TextureUtils::DumpTexture(*texture_details.m_texture,
-                                                     std::string{texture_details.m_hash}, 0, false);
+              VideoCommon::TextureUtils::DumpTexture(*texture.texture_data,
+                                                     std::string{texture.hash_name}, 0, false);
             }
             if (ImGui::Selectable("Copy hash"))
             {
-              ImGui::SetClipboardText(texture_details.m_hash.data());
+              ImGui::SetClipboardText(texture.hash_name.data());
             }
             ImGui::EndPopup();
           }
-          ImGui::Text("%dx%d", texture_details.m_texture->GetWidth(),
-                      texture_details.m_texture->GetHeight());
+          ImGui::Text("%dx%d", texture.texture_data->GetWidth(), texture.texture_data->GetHeight());
         }
       }
       ImGui::EndTable();
@@ -205,36 +200,37 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsMods::DrawCallID& selecte
   }
 }
 
-void PropertiesPanel::FBCallIDSelected(const FBInfo& selected_object)
+void PropertiesPanel::TextureCacheIDSelected(
+    const GraphicsModSystem::TextureCacheID& selected_object)
 {
-  const auto& data = m_state.m_runtime_data.m_fb_call_id_to_data[selected_object];
-  auto& user_data = m_state.m_user_data.m_fb_call_id_to_user_data[selected_object];
+  const auto& data = m_state.m_runtime_data.m_texture_cache_id_to_data[selected_object];
+  auto& user_data = m_state.m_user_data.m_texture_cache_id_to_user_data[selected_object];
 
-  if (ImGui::BeginTable("FBTargetForm", 2))
+  if (ImGui::BeginTable("TextureCacheTargetForm", 2))
   {
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::Text("DisplayName");
     ImGui::TableNextColumn();
-    ImGui::InputText("##FBTargetDisplayName", &user_data.m_friendly_name);
+    ImGui::InputText("##TextureCacheTargetDisplayName", &user_data.m_friendly_name);
 
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::Text("ID");
     ImGui::TableNextColumn();
-    ImGui::Text("%s", fmt::format("{}", selected_object.CalculateHash()).c_str());
+    ImGui::Text("%s", data.m_id.c_str());
 
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::Text("Time Created");
     ImGui::TableNextColumn();
-    ImGui::Text("%s", fmt::format("{}", data.m_time.time_since_epoch().count()).c_str());
+    ImGui::Text("%s", fmt::format("{}", data.m_create_time.time_since_epoch().count()).c_str());
 
-    if (data.m_texture)
+    if (data.texture.texture_data)
     {
       const float column_width = ImGui::GetContentRegionAvail().x;
-      float image_width = data.m_texture->GetWidth();
-      float image_height = data.m_texture->GetHeight();
+      float image_width = data.texture.texture_data->GetWidth();
+      float image_height = data.texture.texture_data->GetHeight();
       const float image_aspect_ratio = image_width / image_height;
 
       image_width = column_width;
@@ -244,14 +240,14 @@ void PropertiesPanel::FBCallIDSelected(const FBInfo& selected_object)
       ImGui::TableNextColumn();
       ImGui::Text("Texture");
       ImGui::TableNextColumn();
-      ImGui::Image(data.m_texture, ImVec2{image_width, image_height});
+      ImGui::Image(data.texture.texture_data, ImVec2{image_width, image_height});
     }
 
     ImGui::EndTable();
   }
 }
 
-void PropertiesPanel::LightSelected(const GraphicsMods::LightID& selected_object)
+void PropertiesPanel::LightSelected(const GraphicsModSystem::LightID& selected_object)
 {
   auto& data = m_state.m_runtime_data.m_light_id_to_data[selected_object];
   auto& user_data = m_state.m_user_data.m_light_id_to_user_data[selected_object];

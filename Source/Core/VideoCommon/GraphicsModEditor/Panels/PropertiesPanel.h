@@ -25,9 +25,9 @@ public:
   void DrawImGui();
 
 private:
-  void DrawCallIDSelected(const GraphicsMods::DrawCallID& selected_object);
-  void FBCallIDSelected(const FBInfo& selected_object);
-  void LightSelected(const GraphicsMods::LightID& selected_object);
+  void DrawCallIDSelected(const GraphicsModSystem::DrawCallID& selected_object);
+  void TextureCacheIDSelected(const GraphicsModSystem::TextureCacheID& selected_object);
+  void LightSelected(const GraphicsModSystem::LightID& selected_object);
   void AssetDataSelected(EditorAsset* selected_object);
   void SelectionOccurred(const std::set<SelectableType>& selection);
 
