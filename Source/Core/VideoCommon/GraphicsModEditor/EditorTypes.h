@@ -23,7 +23,6 @@
 #include "VideoCommon/Assets/MaterialAsset.h"
 #include "VideoCommon/Assets/MeshAsset.h"
 #include "VideoCommon/Assets/ShaderAsset.h"
-#include "VideoCommon/GraphicsModSystem/Runtime/FBInfo.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModAction.h"
 #include "VideoCommon/GraphicsModSystem/Types.h"
 #include "VideoCommon/XFMemory.h"
@@ -32,38 +31,25 @@ namespace GraphicsModEditor
 {
 struct DrawCallData
 {
+  GraphicsModSystem::DrawCallID m_id;
   std::chrono::steady_clock::time_point m_create_time;
   std::chrono::steady_clock::time_point m_last_update_time;
-  ProjectionType m_projection_type;
-  CullMode m_cull_mode;
 
-  struct TextureDetails
-  {
-    AbstractTexture* m_texture;
-    std::string_view m_hash;
-    u32 m_texture_unit;
-  };
-  std::vector<TextureDetails> m_textures_details;
-  GraphicsMods::DrawCallID m_id;
+  GraphicsModSystem::DrawData draw_data;
+};
 
-  // Blending
-  bool m_blendenable;
-  bool m_logicopenable;
-  bool m_dither;
-  bool m_colorupdate;
-  bool m_alphaupdate;
-  DstBlendFactor m_dstfactor;
-  SrcBlendFactor m_srcfactor;
-  bool m_subtract;
-  LogicOp m_logicmode;
+struct TextureCacheData
+{
+  GraphicsModSystem::TextureCacheID m_id;
+  std::chrono::steady_clock::time_point m_create_time;
+  std::chrono::steady_clock::time_point m_last_load_time;
 
-  // Transform
-  std::array<float, 4> m_world_position;
+  GraphicsModSystem::Texture texture;
 };
 
 struct LightData
 {
-  GraphicsMods::LightID m_id;
+  GraphicsModSystem::LightID m_id;
   std::chrono::steady_clock::time_point m_create_time;
   std::chrono::steady_clock::time_point m_last_update_time;
 
@@ -74,19 +60,12 @@ struct LightData
   float4 m_dir;
 };
 
-struct FBCallData
-{
-  std::chrono::steady_clock::time_point m_time;
-  AbstractTexture* m_texture;
-  FBInfo m_id;
-};
-
 struct DrawCallUserData
 {
   std::string m_friendly_name;
 };
 
-struct FBCallUserData
+struct TextureCacheUserData
 {
   std::string m_friendly_name;
 };
@@ -118,8 +97,8 @@ struct EditorAsset
   bool m_valid = false;
 };
 
-using SelectableType = std::variant<GraphicsMods::DrawCallID, FBInfo, GraphicsMods::LightID,
-                                    GraphicsModAction*, EditorAsset*>;
+using SelectableType = std::variant<GraphicsModSystem::DrawCallID, GraphicsModSystem::TextureCacheID,
+                                    GraphicsModSystem::LightID, GraphicsModAction*, EditorAsset*>;
 
 class EditorAction final : public GraphicsModAction
 {
@@ -174,8 +153,6 @@ public:
   void DrawImGui() override
   {
     ImGui::Checkbox("##EmptyCheckbox", &m_active);
-    ImGui::SameLine();
-    ImGui::InputText("##EmptyText", &m_name);
     m_action->DrawImGui();
   }
 
@@ -185,29 +162,16 @@ public:
       return;
 
     auto& json_obj = *obj;
-
-    json_obj["name"] = picojson::value{m_name};
-    json_obj["id"] = picojson::value{m_id};
     json_obj["active"] = picojson::value{m_active};
     m_action->SerializeToConfig(&json_obj);
   }
 
   std::string GetFactoryName() const override { return m_action->GetFactoryName(); }
 
-  void SetName(std::string_view name) { m_name = std::string(name); }
-  const std::string& GetName() const { return m_name; }
-
-  void SetID(std::string_view id) { m_id = std::string(id); }
-  const std::string& GetID() const { return m_id; }
-
   void SetActive(bool active) { m_active = active; }
-
-protected:
-  std::string m_name;
 
 private:
   bool m_active = true;
-  std::string m_id;
   std::unique_ptr<GraphicsModAction> m_action;
 };
 }  // namespace GraphicsModEditor
