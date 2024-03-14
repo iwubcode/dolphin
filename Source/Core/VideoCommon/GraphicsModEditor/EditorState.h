@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -19,42 +20,19 @@
 #include "VideoCommon/GraphicsModEditor/EditorAssetSource.h"
 #include "VideoCommon/GraphicsModEditor/EditorTypes.h"
 #include "VideoCommon/GraphicsModEditor/SceneDumper.h"
+#include "VideoCommon/GraphicsModSystem/Config/GraphicsModHashPolicy.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModAction.h"
 #include "VideoCommon/GraphicsModSystem/Types.h"
 
-struct GraphicsModConfig;
+namespace GraphicsModSystem::Config
+{
+struct GraphicsMod;
+}
 
 namespace GraphicsModEditor
 {
-struct OperationAndDrawCallID
-{
-  enum class Operation
-  {
-    Projection2D,
-    Projection3D,
-    TextureCreate,
-    TextureLoad,
-    Draw
-  };
-  Operation m_operation;
-
-  GraphicsMods::DrawCallID m_draw_call_id;
-
-  auto operator<=>(const OperationAndDrawCallID&) const = default;
-};
 struct EditorData
 {
-  // References of draw actions defined by the editor
-  // (ex: highlight)
-  std::map<OperationAndDrawCallID, std::vector<GraphicsModAction*>>
-      m_operation_and_draw_call_id_to_actions;
-
-  // References of efb actions defined by the editor
-  // (ex: highlight)
-  std::map<FBInfo, std::vector<GraphicsModAction*>> m_fb_call_id_to_actions;
-
-  std::map<GraphicsMods::LightID, std::vector<GraphicsModAction*>> m_light_id_to_actions;
-
   // An action used by the editor to highlight selected draw calls
   std::unique_ptr<GraphicsModAction> m_highlight_action;
 
@@ -76,6 +54,8 @@ struct EditorData
       m_assets_waiting_for_preview;
 
   std::shared_ptr<VideoCommon::DirectFilesystemAssetLibrary> m_asset_library;
+
+  u64 m_next_action_id = 1;
 };
 
 struct UserData
@@ -85,54 +65,80 @@ struct UserData
   std::string m_description;
   std::filesystem::path m_current_mod_path;
 
-  // References of actions defined by the user to provide to the graphics mod interface
-  std::map<OperationAndDrawCallID, std::vector<GraphicsModAction*>>
-      m_operation_and_draw_call_id_to_actions;
+  GraphicsModSystem::Config::HashPolicy m_hash_policy =
+      GraphicsModSystem::Config::GetDefaultHashPolicy();
 
-  // The data stored for the above and in a more easily accessible structure
-  // for usage in the editor
-  std::map<GraphicsMods::DrawCallID, std::vector<std::unique_ptr<EditorAction>>>
+  // References of actions defined by the user to provide to the graphics mod interface
+  std::map<GraphicsModSystem::DrawCallID, std::vector<GraphicsModAction*>>
       m_draw_call_id_to_actions;
 
   // References of actions defined by the user to provide to the graphics mod interface
-  std::map<FBInfo, std::vector<GraphicsModAction*>> m_fb_call_id_to_reference_actions;
-
-  // The data stored for the above and in a more easily accessible structure
-  // for usage in the editor
-  std::map<FBInfo, std::vector<std::unique_ptr<EditorAction>>> m_fb_call_id_to_actions;
+  std::map<GraphicsModSystem::TextureCacheID, std::vector<GraphicsModAction*>>
+      m_texture_cache_id_to_actions;
 
   // References of actions defined by the user to provide to the graphics mod interface
-  std::map<GraphicsMods::LightID, std::vector<GraphicsModAction*>> m_light_id_to_reference_actions;
+  std::map<GraphicsModSystem::LightID, std::vector<GraphicsModAction*>>
+      m_light_id_to_reference_actions;
 
-  // The data stored for the above and in a more easily accessible structure
-  // for usage in the editor
-  std::map<GraphicsMods::LightID, std::vector<std::unique_ptr<EditorAction>>> m_light_id_to_actions;
+  std::vector<std::unique_ptr<EditorAction>> m_actions;
 
   // Mapping the draw call id to any user data for the target
-  std::map<GraphicsMods::DrawCallID, DrawCallUserData> m_draw_call_id_to_user_data;
+  std::map<GraphicsModSystem::DrawCallID, DrawCallUserData> m_draw_call_id_to_user_data;
 
-  // Mapping the fbinfo to any user data for the target
-  std::map<FBInfo, FBCallUserData> m_fb_call_id_to_user_data;
+  // Mapping the texture cache id to any user data for the target
+  std::map<GraphicsModSystem::TextureCacheID, TextureCacheUserData> m_texture_cache_id_to_user_data;
 
   // Mapping the light id to any user data for the target
-  std::map<GraphicsMods::LightID, LightUserData> m_light_id_to_user_data;
+  std::map<GraphicsModSystem::LightID, LightUserData> m_light_id_to_user_data;
 
   // The asset library provided to all user actions
   std::shared_ptr<EditorAssetSource> m_asset_library;
 };
-void WriteToGraphicsMod(const UserData& user_data, GraphicsModConfig* config);
-void ReadFromGraphicsMod(UserData* user_data, const GraphicsModConfig& config);
+void WriteToGraphicsMod(const UserData& user_data, GraphicsModSystem::Config::GraphicsMod* config);
+void ReadFromGraphicsMod(UserData* user_data,
+                         EditorData* editor_data, const GraphicsModSystem::Config::GraphicsMod& config,
+                         const std::string& mod_root);
 
 struct RuntimeState
 {
-  // Mapping the draw call id to the frame's data
-  std::map<GraphicsMods::DrawCallID, DrawCallData> m_draw_call_id_to_data;
+  struct XFBData
+  {
+    struct DrawCallWithTime
+    {
+      GraphicsModSystem::DrawCallID draw_call_id;
+      std::chrono::steady_clock::time_point sort_time;
+    };
 
-  // Mapping the draw call id to the frame's data
-  std::map<FBInfo, FBCallData> m_fb_call_id_to_data;
+    struct DrawCallWithTimeCompare
+    {
+      bool operator()(const DrawCallWithTime& lhs, const DrawCallWithTime& rhs) const
+      {
+        return lhs.sort_time < rhs.sort_time;
+      }
+    };
 
-  // Mapping the draw call id to the frame's data
-  std::map<GraphicsMods::LightID, LightData> m_light_id_to_data;
+    // The draw call ids this frame
+    std::set<DrawCallWithTime, DrawCallWithTimeCompare> m_draw_call_ids;
+
+    // The EFB/XFB calls triggered this frame
+    std::set<GraphicsModSystem::TextureCacheID> m_texture_cache_ids;
+
+    // The game lights triggered this frame
+    std::set<GraphicsModSystem::LightID> m_light_ids;
+  };
+  std::map<std::string, XFBData, std::less<>> m_xfb_to_data;
+  std::vector<std::string> m_xfbs_presented;
+
+  XFBData m_current_xfb;
+
+  // Mapping the draw call id to the last known data
+  std::map<GraphicsModSystem::DrawCallID, DrawCallData> m_draw_call_id_to_data;
+
+  // Mapping the EFB/XFB calls to the last known data
+  std::map<GraphicsModSystem::TextureCacheID, TextureCacheData, std::less<>> m_texture_cache_id_to_data;
+
+  // Mapping the game light id to the last known data
+  std::map<GraphicsModSystem::LightID, LightData> m_light_id_to_data;
 };
 
 struct EditorState

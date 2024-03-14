@@ -13,13 +13,12 @@
 #include "Common/VariantUtil.h"
 
 #include "VideoCommon/GraphicsModSystem/Config/GraphicsMod.h"
-#include "VideoCommon/GraphicsModSystem/Config/GraphicsModFeature.h"
-#include "VideoCommon/GraphicsModSystem/Config/GraphicsTargetGroup.h"
+#include "VideoCommon/GraphicsModSystem/Constants.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModActionFactory.h"
 
 namespace GraphicsModEditor
 {
-void WriteToGraphicsMod(const UserData& user_data, GraphicsModConfig* config)
+void WriteToGraphicsMod(const UserData& user_data, GraphicsModSystem::Config::GraphicsMod* config)
 {
   config->m_title = user_data.m_title;
   config->m_author = user_data.m_author;
@@ -27,127 +26,69 @@ void WriteToGraphicsMod(const UserData& user_data, GraphicsModConfig* config)
 
   config->m_assets = user_data.m_asset_library->GetAssets(user_data.m_current_mod_path);
 
+  std::map<GraphicsModAction*, std::size_t> action_to_index;
+  for (const auto& action : user_data.m_actions)
+  {
+    GraphicsModSystem::Config::GraphicsModAction action_config;
+    action_config.m_factory_name = action->GetFactoryName();
+
+    picojson::object serialized_data;
+    action->SerializeToConfig(&serialized_data);
+    action_config.m_data = picojson::value{serialized_data};
+
+    config->m_actions.push_back(std::move(action_config));
+    action_to_index[action.get()] = config->m_actions.size() - 1;
+  }
+
   for (const auto& [draw_call_id, actions] : user_data.m_draw_call_id_to_actions)
   {
-    GraphicsTargetGroupConfig group;
-    std::string group_name = fmt::format("group_{}", Common::ToUnderlying(draw_call_id));
-    group.m_name = group_name;
-    for (const auto& [operation_and_drawcall, action_references] :
-         user_data.m_operation_and_draw_call_id_to_actions)
-    {
-      if (operation_and_drawcall.m_draw_call_id == draw_call_id)
-      {
-        switch (operation_and_drawcall.m_operation)
-        {
-        case OperationAndDrawCallID::Operation::Projection2D:
-        {
-        }
-        break;
-        case OperationAndDrawCallID::Operation::Projection3D:
-        {
-        }
-        break;
-        case OperationAndDrawCallID::Operation::TextureCreate:
-        {
-        }
-        break;
-        case OperationAndDrawCallID::Operation::TextureLoad:
-        {
-        }
-        break;
-        case OperationAndDrawCallID::Operation::Draw:
-        {
-          DrawStartedTarget target;
-          target.m_draw_call_id = draw_call_id;
-          group.m_targets.push_back(std::move(target));
-        }
-        break;
-        };
-      }
-    }
-    config->m_groups.push_back(std::move(group));
+    GraphicsModSystem::Config::IntTarget i_target;
+    i_target.m_target_id = Common::ToUnderlying(draw_call_id);
 
+    if (const auto iter = user_data.m_draw_call_id_to_user_data.find(draw_call_id);
+        iter != user_data.m_draw_call_id_to_user_data.end())
+    {
+      i_target.m_name = iter->second.m_friendly_name;
+    }
+    config->m_targets.push_back(std::move(i_target));
+
+    auto& action_indexes = config->m_target_index_to_action_indexes[config->m_targets.size() - 1];
     for (const auto& action : actions)
     {
-      GraphicsModFeatureConfig feature;
-      feature.m_group = group_name;
-      feature.m_action = action->GetFactoryName();
+      action_indexes.push_back(action_to_index[action]);
+    }
+  }
 
-      picojson::object serialized_data;
-      action->SerializeToConfig(&serialized_data);
-      feature.m_action_data = picojson::value{serialized_data};
+  for (const auto& [texture_cache_id, actions] : user_data.m_texture_cache_id_to_actions)
+  {
+    GraphicsModSystem::Config::StringTarget s_target;
+    s_target.m_target_id = texture_cache_id;
 
-      config->m_features.push_back(std::move(feature));
+    if (const auto iter = user_data.m_texture_cache_id_to_user_data.find(texture_cache_id);
+        iter != user_data.m_texture_cache_id_to_user_data.end())
+    {
+      s_target.m_name = iter->second.m_friendly_name;
+    }
+    config->m_targets.push_back(std::move(s_target));
+
+    auto& action_indexes = config->m_target_index_to_action_indexes[config->m_targets.size() - 1];
+    for (const auto& action : actions)
+    {
+      action_indexes.push_back(action_to_index[action]);
     }
   }
 }
-void ReadFromGraphicsMod(UserData* user_data, const GraphicsModConfig& config)
+
+void ReadFromGraphicsMod(UserData* user_data, EditorData* editor_data,
+                         const GraphicsModSystem::Config::GraphicsMod& config,
+                         const std::string& mod_root)
 {
   user_data->m_title = config.m_title;
   user_data->m_author = config.m_author;
   user_data->m_description = config.m_description;
-  user_data->m_current_mod_path =
-      PathToString(std::filesystem::path{config.GetAbsolutePath()}.parent_path());
+  user_data->m_current_mod_path = mod_root;
 
   user_data->m_asset_library->AddAssets(config.m_assets, user_data->m_current_mod_path);
-
-  std::map<std::string, std::vector<GraphicsMods::DrawCallID>> group_to_drawcalls;
-  std::map<GraphicsMods::DrawCallID, std::vector<OperationAndDrawCallID>> drawcall_to_operations;
-
-  const auto add_draw_call_target = [&](const auto& group,
-                                        OperationAndDrawCallID::Operation operation,
-                                        GraphicsMods::DrawCallID draw_call) {
-    const auto [operations_iter, added] =
-        drawcall_to_operations.try_emplace(draw_call, std::vector<OperationAndDrawCallID>{});
-    if (added)
-    {
-      const auto [drawcalls_iter, added2] =
-          group_to_drawcalls.try_emplace(group.m_name, std::vector<GraphicsMods::DrawCallID>{});
-      drawcalls_iter->second.push_back(draw_call);
-    }
-    OperationAndDrawCallID operation_and_drawcall;
-    operation_and_drawcall.m_draw_call_id = draw_call;
-    operation_and_drawcall.m_operation = operation;
-    operations_iter->second.push_back(std::move(operation_and_drawcall));
-  };
-
-  std::map<std::string, std::vector<FBInfo>> group_to_fbinfo;
-
-  for (const auto& group : config.m_groups)
-  {
-    for (const auto& target : group.m_targets)
-    {
-      std::visit(overloaded{
-                     [&](const DrawStartedTarget& the_target) {
-                       add_draw_call_target(group, OperationAndDrawCallID::Operation::Draw,
-                                            the_target.m_draw_call_id);
-                     },
-                     [&](const LoadTextureTarget&) {},
-                     [&](const CreateTextureTarget&) {},
-                     [&](const EFBTarget& the_target) {
-                       FBInfo info;
-                       info.m_height = the_target.m_height;
-                       info.m_width = the_target.m_width;
-                       info.m_texture_format = the_target.m_texture_format;
-
-                       const auto [it, added] =
-                           group_to_fbinfo.try_emplace(group.m_name, std::vector<FBInfo>{});
-                       it->second.push_back(std::move(info));
-                     },
-                     [&](const XFBTarget& the_target) {
-                       FBInfo info;
-                       info.m_height = the_target.m_height;
-                       info.m_width = the_target.m_width;
-                       info.m_texture_format = the_target.m_texture_format;
-
-                       const auto [it, added] =
-                           group_to_fbinfo.try_emplace(group.m_name, std::vector<FBInfo>{});
-                       it->second.push_back(std::move(info));
-                     },
-                 },
-                 target);
-    }
-  }
 
   const auto create_action =
       [&](const std::string_view& action_name,
@@ -161,78 +102,80 @@ void ReadFromGraphicsMod(UserData* user_data, const GraphicsModConfig& config)
     return action;
   };
 
-  for (const auto& feature : config.m_features)
+  for (const auto& action_config : config.m_actions)
   {
-    if (const auto it = group_to_drawcalls.find(feature.m_group); it != group_to_drawcalls.end())
+    if (auto action = create_action(action_config.m_factory_name, action_config.m_data))
     {
-      for (const auto& draw_call : it->second)
-      {
-        auto action = create_action(feature.m_action, feature.m_action_data);
-        if (!action)
-          continue;
-
-        const auto [drawcall_actions_it, added] = user_data->m_draw_call_id_to_actions.try_emplace(
-            draw_call, std::vector<std::unique_ptr<EditorAction>>{});
-
-        auto editor_action = std::make_unique<EditorAction>(std::move(action));
-
-        if (feature.m_action_data.contains("name"))
-        {
-          editor_action->SetName(feature.m_action_data.get("name").to_str());
-        }
-        else
-        {
-          editor_action->SetName("Action");
-        }
-
-        if (feature.m_action_data.contains("id"))
-        {
-          editor_action->SetID(feature.m_action_data.get("id").to_str());
-        }
-        else
-        {
-          editor_action->SetID(
-              fmt::format("{}", std::chrono::system_clock::now().time_since_epoch().count()));
-        }
-
-        if (feature.m_action_data.contains("active"))
-        {
-          editor_action->SetActive(feature.m_action_data.get("active").get<bool>());
-        }
-        drawcall_actions_it->second.push_back(std::move(editor_action));
-
-        if (const auto operations_it = drawcall_to_operations.find(draw_call);
-            operations_it != drawcall_to_operations.end())
-        {
-          for (const auto& operation : operations_it->second)
-          {
-            const auto [to_actions_it, otdc_added] =
-                user_data->m_operation_and_draw_call_id_to_actions.try_emplace(
-                    operation, std::vector<GraphicsModAction*>{});
-            to_actions_it->second.push_back(drawcall_actions_it->second.back().get());
-          }
-        }
-      }
+      user_data->m_actions.push_back(std::make_unique<EditorAction>(std::move(action)));
+      user_data->m_actions.back().get()->SetID(editor_data->m_next_action_id);
+      editor_data->m_next_action_id++;
     }
+  }
 
-    if (const auto it = group_to_fbinfo.find(feature.m_group); it != group_to_fbinfo.end())
+  // TODO: ...
+  for (const auto& tag_config : config.m_tags)
+  {
+    // Skip internal tags
+    // in the future we may want to handle if internal tags
+    // change or are removed
+    if (tag_config.m_name.starts_with(GraphicsModSystem::internal_tag_prefix))
     {
-      for (const auto& fbinfo : it->second)
-      {
-        auto action = create_action(feature.m_action, feature.m_action_data);
-        if (!action)
-          continue;
-
-        const auto [fb_actions_it, added] = user_data->m_fb_call_id_to_actions.try_emplace(
-            fbinfo, std::vector<std::unique_ptr<EditorAction>>{});
-        fb_actions_it->second.push_back(std::make_unique<EditorAction>(std::move(action)));
-
-        const auto [fb_actions_ref_it, fbc_added] =
-            user_data->m_fb_call_id_to_reference_actions.try_emplace(
-                fbinfo, std::vector<GraphicsModAction*>{});
-        fb_actions_ref_it->second.push_back(fb_actions_it->second.back().get());
-      }
+      continue;
     }
+  }
+
+  for (const auto& target : config.m_targets)
+  {
+    std::visit(
+        overloaded{
+            [&](const GraphicsModSystem::Config::IntTarget& int_target) {
+              const GraphicsModSystem::DrawCallID draw_call_id{int_target.m_target_id};
+              auto& actions = user_data->m_draw_call_id_to_actions[draw_call_id];
+              actions = {};
+
+              if (int_target.m_name != "")
+              {
+                user_data->m_draw_call_id_to_user_data[draw_call_id].m_friendly_name =
+                    int_target.m_name;
+              }
+            },
+            [&](const GraphicsModSystem::Config::StringTarget& str_target) {
+              const GraphicsModSystem::TextureCacheID texture_cache_id{str_target.m_target_id};
+              auto& actions = user_data->m_texture_cache_id_to_actions[texture_cache_id];
+              actions = {};
+
+              if (str_target.m_name != "")
+              {
+                user_data->m_texture_cache_id_to_user_data[texture_cache_id].m_friendly_name =
+                    str_target.m_name;
+              }
+            }},
+        target);
+  }
+
+  for (const auto& [target_index, action_indexes] : config.m_target_index_to_action_indexes)
+  {
+    std::visit(
+        overloaded{[&](const GraphicsModSystem::Config::IntTarget& int_target) {
+                     const GraphicsModSystem::DrawCallID draw_call_id{int_target.m_target_id};
+                     auto& actions = user_data->m_draw_call_id_to_actions[draw_call_id];
+
+                     for (const auto& action_index : action_indexes)
+                     {
+                       actions.push_back(user_data->m_actions[action_index].get());
+                     }
+                   },
+                   [&](const GraphicsModSystem::Config::StringTarget& str_target) {
+                     const GraphicsModSystem::TextureCacheID texture_cache_id{
+                         str_target.m_target_id};
+                     auto& actions = user_data->m_texture_cache_id_to_actions[texture_cache_id];
+
+                     for (const auto& action_index : action_indexes)
+                     {
+                       actions.push_back(user_data->m_actions[action_index].get());
+                     }
+                   }},
+        config.m_targets[target_index]);
   }
 }
 }  // namespace GraphicsModEditor
