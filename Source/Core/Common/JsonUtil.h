@@ -40,5 +40,11 @@ Type ReadNumericOrDefault(const picojson::object& obj, const std::string& key,
   return MathUtil::SaturatingCast<Type>(it->second.get<double>());
 }
 
+std::string ReadStringOrDefault(const picojson::object& obj, const std::string& key,
+                                std::string default_value = "");
+
+bool ReadBoolOrDefault(const picojson::object& obj, const std::string& key,
+                       bool default_value = false);
+
 picojson::object ToJsonObject(const Common::Vec3& vec);
 void FromJson(const picojson::object& obj, Common::Vec3& vec);

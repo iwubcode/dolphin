@@ -18,3 +18,24 @@ void FromJson(const picojson::object& obj, Common::Vec3& vec)
   vec.y = ReadNumericOrDefault<float>(obj, "y");
   vec.z = ReadNumericOrDefault<float>(obj, "z");
 }
+
+std::string ReadStringOrDefault(const picojson::object& obj, const std::string& key,
+                                std::string default_value)
+{
+  const auto it = obj.find(key);
+  if (it == obj.end())
+    return default_value;
+  if (!it->second.is<std::string>())
+    return default_value;
+  return it->second.to_str();
+}
+
+bool ReadBoolOrDefault(const picojson::object& obj, const std::string& key, bool default_value)
+{
+  const auto it = obj.find(key);
+  if (it == obj.end())
+    return default_value;
+  if (!it->second.is<bool>())
+    return default_value;
+  return it->second.get<bool>();
+}
