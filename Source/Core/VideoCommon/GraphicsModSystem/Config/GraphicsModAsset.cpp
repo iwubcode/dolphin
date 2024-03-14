@@ -6,7 +6,9 @@
 #include "Common/Logging/Log.h"
 #include "Common/StringUtil.h"
 
-void GraphicsModAssetConfig::SerializeToConfig(picojson::object& json_obj) const
+namespace GraphicsModSystem::Config
+{
+void GraphicsModAsset::Serialize(picojson::object& json_obj) const
 {
   json_obj.emplace("name", m_asset_id);
 
@@ -18,7 +20,7 @@ void GraphicsModAssetConfig::SerializeToConfig(picojson::object& json_obj) const
   json_obj.emplace("data", std::move(serialized_data));
 }
 
-bool GraphicsModAssetConfig::DeserializeFromConfig(const picojson::object& obj)
+bool GraphicsModAsset::Deserialize(const picojson::object& obj)
 {
   auto name_iter = obj.find("name");
   if (name_iter == obj.end())
@@ -64,3 +66,4 @@ bool GraphicsModAssetConfig::DeserializeFromConfig(const picojson::object& obj)
 
   return true;
 }
+}  // namespace GraphicsModSystem::Config
