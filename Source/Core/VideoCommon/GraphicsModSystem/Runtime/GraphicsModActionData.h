@@ -21,11 +21,9 @@ namespace GraphicsModActionData
 {
 struct MeshChunk
 {
-  const void* vertices;
+  std::span<u8> vertex_data;
+  std::span<u16> index_data;
   u32 vertex_stride;
-  u32 num_vertices;
-  const u16* indices;
-  u32 num_indices;
   NativeVertexFormat* vertex_format;
   PrimitiveType primitive_type;
   u32 components_available;

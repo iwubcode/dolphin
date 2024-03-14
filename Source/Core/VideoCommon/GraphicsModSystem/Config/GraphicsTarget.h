@@ -3,56 +3,32 @@
 
 #pragma once
 
-#include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include <picojson.h>
 
 #include "Common/CommonTypes.h"
-#include "VideoCommon/GraphicsModSystem/Types.h"
-#include "VideoCommon/TextureDecoder.h"
-#include "VideoCommon/XFMemory.h"
 
-struct TextureTarget
+namespace GraphicsModSystem::Config
 {
-  std::string m_texture_info_string;
+struct StringTarget
+{
+  std::string m_target_id;
+  std::string m_name;
+  std::vector<std::string> m_tag_names;
 };
 
-struct DrawStartedTarget final
+struct IntTarget
 {
-  GraphicsMods::DrawCallID m_draw_call_id;
-  GraphicsMods::MeshID m_mesh_id;
+  u64 m_target_id;
+  std::string m_name;
+  std::vector<std::string> m_tag_names;
 };
 
-struct LoadTextureTarget final : public TextureTarget
-{
-};
+using AnyTarget = std::variant<StringTarget, IntTarget>;
 
-struct CreateTextureTarget final : public TextureTarget
-{
-};
-
-struct FBTarget
-{
-  u32 m_height = 0;
-  u32 m_width = 0;
-  TextureFormat m_texture_format = TextureFormat::I4;
-};
-
-struct EFBTarget final : public FBTarget
-{
-};
-
-struct XFBTarget final : public FBTarget
-{
-};
-
-using GraphicsTargetConfig =
-    std::variant<DrawStartedTarget, LoadTextureTarget, CreateTextureTarget, EFBTarget, XFBTarget>;
-
-void SerializeTargetToConfig(picojson::object& json_obj, const GraphicsTargetConfig& target);
-std::optional<GraphicsTargetConfig> DeserializeTargetFromConfig(const picojson::object& obj);
-
-void SerializeTargetToProfile(picojson::object* obj, const GraphicsTargetConfig& target);
-void DeserializeTargetFromProfile(const picojson::object& obj, GraphicsTargetConfig* target);
+void SerializeTarget(picojson::object& json_obj, const AnyTarget& target);
+bool DeserializeTarget(const picojson::object& json_obj, AnyTarget& target);
+}  // namespace GraphicsModSystem::Config

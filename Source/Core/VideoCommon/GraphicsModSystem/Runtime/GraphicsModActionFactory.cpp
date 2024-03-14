@@ -35,7 +35,7 @@ std::unique_ptr<GraphicsModAction> Create(std::string_view name, const picojson:
   {
     return CustomPipelineAction::Create(json_data, std::move(library));
   }
-  else if (name == "transform")
+  else if (name == TransformAction::factory_name)
   {
     return TransformAction::Create(json_data);
   }
