@@ -38,7 +38,6 @@ public:
   void Shutdown();
 
   bool IsEnabled() const { return m_enabled; }
-  SceneDumper* GetSceneDumper() const;
 
   // Creates a new graphics mod for editing
   bool NewMod(std::string_view name, std::string_view author, std::string_view description);
@@ -50,29 +49,9 @@ public:
   // Should be called by main UI manager
   void DrawImGui();
 
-  void AddDrawCall(DrawCallData draw_call);
-  void AddFBCall(FBCallData fb_call);
-  void AddLightData(LightData light_data);
-
-  // TODO: move...
-  const std::vector<GraphicsModAction*>& GetProjectionActions(ProjectionType projection_type) const;
-  const std::vector<GraphicsModAction*>&
-  GetProjectionTextureActions(ProjectionType projection_type,
-                              const std::string& texture_name) const;
-  const std::vector<GraphicsModAction*>&
-  GetDrawStartedActions(GraphicsMods::DrawCallID draw_call_id) const;
-  const std::vector<GraphicsModAction*>&
-  GetTextureLoadActions(const std::string& texture_name) const;
-  const std::vector<GraphicsModAction*>&
-  GetTextureCreateActions(const std::string& texture_name) const;
-  const std::vector<GraphicsModAction*>& GetEFBActions(const FBInfo& efb) const;
-  const std::vector<GraphicsModAction*>& GetLightActions(GraphicsMods::LightID light_Id) const;
-
   EditorState* GetEditorState() const;
 
 private:
-  static inline const std::vector<GraphicsModAction*> m_empty_actions = {};
-
   bool RebuildState();
 
   void DrawMenu();
