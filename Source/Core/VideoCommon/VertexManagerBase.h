@@ -10,6 +10,7 @@
 #include "Common/BitSet.h"
 #include "Common/CommonTypes.h"
 #include "Common/MathUtil.h"
+#include "Common/Matrix.h"
 #include "VideoCommon/CPUCull.h"
 #include "VideoCommon/IndexGenerator.h"
 #include "VideoCommon/RenderState.h"
@@ -24,11 +25,6 @@ class NativeVertexFormat;
 class PixelShaderManager;
 class PointerWrap;
 struct PortableVertexDeclaration;
-
-namespace GraphicsModActionData
-{
-struct MeshChunk;
-}
 
 struct Slope
 {
@@ -175,6 +171,23 @@ public:
   // Call at the end of a frame.
   void OnEndFrame();
 
+  // Draws the normal mesh sourced from emulation
+  void DrawEmulatedMesh();
+
+  // Draws the normal mesh sourced from emulation, with a custom shader and/or transform
+  void DrawEmulatedMesh(const CustomPixelShaderContents& custom_pixel_shader_contents,
+                        const std::optional<Common::Matrix44>& custom_transform,
+                        std::span<u8> custom_pixel_shader_uniforms);
+
+  // Draw a custom mesh sourced from a mod, with a custom shader and custom vertex information
+  void DrawCustomMesh(const CustomPixelShaderContents& custom_pixel_shader_contents,
+                      const Common::Matrix44& custom_transform,
+                      std::span<u8> custom_pixel_shader_uniforms, std::span<const u8> vertex_data,
+                      std::span<const u16> index_data, PrimitiveType primitive_type,
+                      u32 vertex_stride,
+                      const VideoCommon::GXPipelineUid& specialized_pipeline_config,
+                      const VideoCommon::GXUberPipelineUid& uber_pipeline_config);
+
 protected:
   // When utility uniforms are used, the GX uniforms need to be re-written afterwards.
   static void InvalidateConstants();
@@ -228,27 +241,14 @@ private:
   // Minimum number of draws per command buffer when attempting to preempt a readback operation.
   static constexpr u32 MINIMUM_DRAW_CALLS_PER_COMMAND_BUFFER_FOR_READBACK = 10;
 
-  void RenderDrawCall(PixelShaderManager& pixel_shader_manager,
-                      GeometryShaderManager& geometry_shader_manager,
-                      const CustomPixelShaderContents& custom_pixel_shader_contents,
-                      std::span<u8> custom_pixel_shader_uniforms,
-                      const std::optional<GraphicsModActionData::MeshChunk>& mesh_chunk,
-                      PrimitiveType primitive_type, const AbstractPipeline* current_pipeline);
   void UpdatePipelineConfig();
   void UpdatePipelineObject();
 
-  static VideoCommon::GXPipelineUid
-  GetPipelineState(const GraphicsModActionData::MeshChunk& mesh_chunk);
-  static VideoCommon::GXUberPipelineUid
-  GetUberPipelineState(const GraphicsModActionData::MeshChunk& mesh_chunk);
   const AbstractPipeline*
   GetCustomPipeline(const CustomPixelShaderContents& custom_pixel_shader_contents,
                     const VideoCommon::GXPipelineUid& current_pipeline_config,
                     const VideoCommon::GXUberPipelineUid& current_uber_pipeline_confi,
                     const AbstractPipeline* current_pipeline) const;
-
-  bool IsDrawSkinned(NativeVertexFormat* format) const;
-  std::array<float, 4> GetLastWorldspacePosition(NativeVertexFormat* format) const;
 
   bool m_is_flushed = true;
   FlushStatistics m_flush_statistics = {};
@@ -264,19 +264,8 @@ private:
   std::unique_ptr<CustomShaderCache> m_custom_shader_cache;
   u64 m_ticks_elapsed = 0;
 
-  // Since Core includes VertexManagerBase and also uses an older xxhash
-  // due to lz4, we need to hide away the hash details inside an impl
-  struct HashStateImpl;
-  std::unique_ptr<HashStateImpl> m_hash_state_impl;
-
   Common::EventHook m_frame_end_event;
   Common::EventHook m_after_present_event;
-
-  std::optional<bool> m_last_draw_skinned = {};
-  u64 m_last_material_hash = {};
-  u64 m_last_draw_call_id = {};
-  u64 m_last_transform_hash = {};
-  std::map<u64, u64> m_draw_call_to_group_map = {};
 };
 
 extern std::unique_ptr<VertexManagerBase> g_vertex_manager;

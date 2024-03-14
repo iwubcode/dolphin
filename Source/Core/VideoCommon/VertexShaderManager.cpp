@@ -23,9 +23,6 @@
 #include "VideoCommon/CPMemory.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/FreeLookCamera.h"
-#include "VideoCommon/GraphicsModEditor/EditorMain.h"
-#include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModActionData.h"
-#include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModManager.h"
 #include "VideoCommon/Statistics.h"
 #include "VideoCommon/VertexLoaderManager.h"
 #include "VideoCommon/VertexManagerBase.h"
@@ -37,7 +34,6 @@
 void VertexShaderManager::Init()
 {
   // Initialize state tracking variables
-  m_projection_graphics_mod_change = false;
 
   constants = {};
 
@@ -160,8 +156,7 @@ bool VertexShaderManager::UseVertexDepthRange()
 
 // Syncs the shader constant buffers with xfmem
 // TODO: A cleaner way to control the matrices without making a mess in the parameters field
-void VertexShaderManager::SetConstants(const std::vector<std::string>& textures,
-                                       XFStateManager& xf_state_manager)
+void VertexShaderManager::SetConstants(XFStateManager& xf_state_manager)
 {
   if (constants.missing_color_hex != g_ActiveConfig.iMissingColorValue)
   {
@@ -391,58 +386,11 @@ void VertexShaderManager::SetConstants(const std::vector<std::string>& textures,
     g_stats.AddScissorRect();
   }
 
-  std::vector<GraphicsModAction*> projection_actions;
-  if (g_ActiveConfig.bGraphicMods)
-  {
-    auto& system = Core::System::GetInstance();
-    auto& editor = system.GetGraphicsModEditor();
-    if (editor.IsEnabled())
-    {
-      for (const auto& action : editor.GetProjectionActions(xfmem.projection.type))
-      {
-        projection_actions.push_back(action);
-      }
-
-      for (const auto& texture : textures)
-      {
-        for (const auto& action :
-             editor.GetProjectionTextureActions(xfmem.projection.type, texture))
-        {
-          projection_actions.push_back(action);
-        }
-      }
-    }
-    else
-    {
-      for (const auto& action : g_graphics_mod_manager->GetProjectionActions(xfmem.projection.type))
-      {
-        projection_actions.push_back(action);
-      }
-
-      for (const auto& texture : textures)
-      {
-        for (const auto& action :
-             g_graphics_mod_manager->GetProjectionTextureActions(xfmem.projection.type, texture))
-        {
-          projection_actions.push_back(action);
-        }
-      }
-    }
-  }
-
-  if (xf_state_manager.DidProjectionChange() || g_freelook_camera.GetController()->IsDirty() ||
-      !projection_actions.empty() || m_projection_graphics_mod_change)
+  if (xf_state_manager.DidProjectionChange() || g_freelook_camera.GetController()->IsDirty())
   {
     xf_state_manager.ResetProjection();
-    m_projection_graphics_mod_change = !projection_actions.empty();
 
     auto corrected_matrix = LoadProjectionMatrix();
-
-    GraphicsModActionData::Projection projection{&corrected_matrix};
-    for (const auto& action : projection_actions)
-    {
-      action->OnProjection(&projection);
-    }
 
     memcpy(constants.projection.data(), corrected_matrix.data.data(), 4 * sizeof(float4));
     dirty = true;
