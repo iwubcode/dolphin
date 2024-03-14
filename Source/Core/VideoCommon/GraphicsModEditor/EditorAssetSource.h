@@ -49,8 +49,10 @@ public:
   void RemoveAsset(const std::filesystem::path& asset_path);
   bool RenameAsset(const std::filesystem::path& old_path, const std::filesystem::path& new_path);
 
-  void AddAssets(std::span<const GraphicsModAssetConfig> assets, const std::filesystem::path& root);
-  std::vector<GraphicsModAssetConfig> GetAssets(const std::filesystem::path& root) const;
+  void AddAssets(std::span<const GraphicsModSystem::Config::GraphicsModAsset> assets,
+                 const std::filesystem::path& root);
+  std::vector<GraphicsModSystem::Config::GraphicsModAsset>
+  GetAssets(const std::filesystem::path& root) const;
   void SaveAssetDataAsFiles() const;
 
   const std::vector<EditorAsset*>& GetAllAssets() const;
