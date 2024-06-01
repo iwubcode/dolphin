@@ -572,11 +572,17 @@ void VertexManagerBase::Flush()
 
   CalculateBinormals(VertexLoaderManager::GetCurrentVertexFormat());
   Common::SmallVector<GraphicsModSystem::TextureView, 8> textures;
+  std::array<SamplerState, 8> samplers;
   if (!m_cull_all)
   {
     for (const u32 i : used_textures)
     {
       const auto cache_entry = g_texture_cache->Load(TextureInfo::FromStage(i));
+      if (!cache_entry)
+        continue;
+      const float custom_tex_scale = cache_entry->GetWidth() / float(cache_entry->native_width);
+      samplers[i] = TextureCacheBase::GetSamplerState(
+          i, custom_tex_scale, cache_entry->is_custom_tex, cache_entry->has_arbitrary_mips);
 
       if (g_ActiveConfig.bGraphicMods)
       {
@@ -739,7 +745,7 @@ void VertexManagerBase::Flush()
     // Texture loading can cause palettes to be applied (-> uniforms -> draws).
     // Palette application does not use vertices, only a full-screen quad, so this is okay.
     // Same with GPU texture decoding, which uses compute shaders.
-    g_texture_cache->BindTextures(used_textures);
+    g_texture_cache->BindTextures(used_textures, samplers);
 
     if (PerfQueryBase::ShouldEmulate())
       g_perf_query->EnableQuery(bpmem.zcontrol.early_ztest ? PQG_ZCOMP_ZCOMPLOC : PQG_ZCOMP);
@@ -764,6 +770,7 @@ void VertexManagerBase::Flush()
       draw_data.depth_state = new_ds;
       draw_data.vertex_data = {m_last_reset_pointer, m_index_generator.GetNumVerts()};
       draw_data.textures = std::move(textures);
+      draw_data.samplers = std::move(samplers);
       draw_data.vertex_format = VertexLoaderManager::GetCurrentVertexFormat();
       draw_data.gpu_skinning_position_transform = vertex_shader_manager.constants.transformmatrices;
       draw_data.gpu_skinning_normal_transform = vertex_shader_manager.constants.normalmatrices;
