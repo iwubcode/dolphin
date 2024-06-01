@@ -659,6 +659,7 @@
     <ClInclude Include="VideoCommon\Assets\CustomTextureData.h" />
     <ClInclude Include="VideoCommon\Assets\DirectFilesystemAssetLibrary.h" />
     <ClInclude Include="VideoCommon\Assets\MaterialAsset.h" />
+    <ClInclude Include="VideoCommon\Assets\MaterialAssetUtils.h" />
     <ClInclude Include="VideoCommon\Assets\MeshAsset.h" />
     <ClInclude Include="VideoCommon\Assets\ShaderAsset.h" />
     <ClInclude Include="VideoCommon\Assets\TextureAsset.h" />
@@ -686,6 +687,7 @@
     <ClInclude Include="VideoCommon\GeometryShaderManager.h" />
     <ClInclude Include="VideoCommon\GraphicsModEditor\Controls\AssetDisplay.h" />
     <ClInclude Include="VideoCommon\GraphicsModEditor\Controls\MaterialControl.h" />
+    <ClInclude Include="VideoCommon\GraphicsModEditor\Controls\MaterialGenerateWindow.h" />
     <ClInclude Include="VideoCommon\GraphicsModEditor\Controls\MeshControl.h" />
     <ClInclude Include="VideoCommon\GraphicsModEditor\Controls\MeshExtractWindow.h" />
     <ClInclude Include="VideoCommon\GraphicsModEditor\Controls\MeshImportWindow.h" />
@@ -702,6 +704,7 @@
     <ClInclude Include="VideoCommon\GraphicsModEditor\Panels\ActiveTargetsPanel.h" />
     <ClInclude Include="VideoCommon\GraphicsModEditor\Panels\AssetBrowserPanel.h" />
     <ClInclude Include="VideoCommon\GraphicsModEditor\Panels\PropertiesPanel.h" />
+    <ClInclude Include="VideoCommon\GraphicsModEditor\MaterialGeneration.h" />
     <ClInclude Include="VideoCommon\GraphicsModEditor\SceneDumper.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Config\GraphicsMod.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Config\GraphicsModAction.h" />
@@ -1331,6 +1334,7 @@
     <ClCompile Include="VideoCommon\Assets\CustomTextureData.cpp" />
     <ClCompile Include="VideoCommon\Assets\DirectFilesystemAssetLibrary.cpp" />
     <ClCompile Include="VideoCommon\Assets\MaterialAsset.cpp" />
+    <ClCompile Include="VideoCommon\Assets\MaterialAssetUtils.cpp" />
     <ClCompile Include="VideoCommon\Assets\MeshAsset.cpp" />
     <ClCompile Include="VideoCommon\Assets\ShaderAsset.cpp" />
     <ClCompile Include="VideoCommon\Assets\TextureAsset.cpp" />
@@ -1354,6 +1358,7 @@
     <ClCompile Include="VideoCommon\GeometryShaderManager.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModEditor\Controls\AssetDisplay.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModEditor\Controls\MaterialControl.cpp" />
+    <ClCompile Include="VideoCommon\GraphicsModEditor\Controls\MaterialGenerateWindow.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModEditor\Controls\MeshControl.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModEditor\Controls\MeshExtractWindow.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModEditor\Controls\MeshImportWindow.cpp" />
@@ -1368,6 +1373,7 @@
     <ClCompile Include="VideoCommon\GraphicsModEditor\Panels\ActiveTargetsPanel.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModEditor\Panels\AssetBrowserPanel.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModEditor\Panels\PropertiesPanel.cpp" />
+    <ClCompile Include="VideoCommon\GraphicsModEditor\MaterialGeneration.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModEditor\SceneDumper.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Config\GraphicsMod.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Config\GraphicsModAction.cpp" />
