@@ -25,6 +25,7 @@
 #include "VideoCommon/Assets/CustomAsset.h"
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/HiresTextures.h"
+#include "VideoCommon/IFramebufferRenderer.h"
 #include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/TextureDecoder.h"
 #include "VideoCommon/TextureInfo.h"
@@ -33,6 +34,7 @@
 
 class AbstractFramebuffer;
 class AbstractStagingTexture;
+class FramebufferManager;
 class PointerWrap;
 struct SamplerState;
 struct VideoConfig;
@@ -96,6 +98,34 @@ struct EFBCopyParams
   bool all_copy_filter_coefs_needed;
   bool copy_filter_can_overflow;
   bool apply_gamma;
+};
+
+struct FrameBufferCopyRawData
+{
+  // Raw PE copy register data (kept for mod hooks that may inspect it):
+  UPE_Copy pe_copy;
+
+  // Destination address and dimensions:
+  u32 dest_address;
+  u32 copy_width;   // srcRect.GetWidth() = bpmem.copyTexSrcWH.x + 1
+  u32 copy_height;  // Final height after y_scale applied (for XFB) or srcRect.GetHeight() for EFB
+
+  // Stride and format:
+  u32 dest_stride;
+  EFBCopyFormat efbcopy_format;  // Pre-computed: EFBCopyFormat::XFB or tp_realFormat()
+
+  // Derived parameters (pre-computed in BPStructs):
+  bool is_depth_copy;
+  bool is_intensity;  // pe_copy.intensity_fmt && pe_copy.auto_conv for EFB, false for XFB
+  bool half_scale;    // pe_copy.half_scale for EFB, false for XFB
+  float y_scale;      // For XFB: computed from scale_invert + dispcopyyscale. For EFB: 1.0f
+  float gamma;        // Pre-looked up from s_gammaLUT[pe_copy.gamma] - ready to use directly
+
+  MathUtil::Rectangle<int> src_rect;
+
+  bool clamp_top;
+  bool clamp_bottom;
+  CopyFilterCoefficients::Values filter_coefficients;
 };
 
 template <>
@@ -164,6 +194,7 @@ struct TCacheEntry
 
   // Pending EFB copy
   std::unique_ptr<AbstractStagingTexture> pending_efb_copy;
+  bool deferred_staging = false;
   u32 pending_efb_copy_width = 0;
   u32 pending_efb_copy_height = 0;
 
@@ -242,7 +273,33 @@ struct TCacheEntry
 
 using RcTcacheEntry = std::shared_ptr<TCacheEntry>;
 
-class TextureCacheBase
+struct PartialTextureUpdateContext
+{
+  RcTcacheEntry target_entry;  // The newly loaded texture being updated
+  RcTcacheEntry source_entry;  // The EFB copy to copy from
+
+  // Conversion pipeline, executed in order at replay time (internal, no handler)
+  bool needs_reinterpret = false;
+  RcTcacheEntry reinterpret_entry;
+
+  bool needs_palette = false;
+  TLUTFormat tlutfmt = TLUTFormat::IA8;
+  u32 texel_offset;
+  RcTcacheEntry palette_entry;
+
+  bool needs_scale = false;
+  RcTcacheEntry source_scale_entry;
+
+  // Store off the original target for reference during scale operation
+  RcTcacheEntry target_prescaled_entry;
+
+  // Final copy parameters, computed at capture time (post-scaling)
+  MathUtil::Rectangle<int> src_rect;
+  MathUtil::Rectangle<int> dst_rect;
+  u32 layers_to_copy = 0;
+};
+
+class TextureCacheBase : public IFramebufferRenderer
 {
 public:
   // Minimal version of TCacheEntry just for TexPool
@@ -278,21 +335,18 @@ public:
   void Invalidate();
   void ReleaseToPool(TCacheEntry* entry);
 
-  TCacheEntry* Load(u32 stage);
+  RcTcacheEntry Load(u32 stage);
   RcTcacheEntry GetTexture(const int textureCacheSafetyColorSampleSize,
                            const TextureInfo& texture_info);
   RcTcacheEntry GetXFBTexture(u32 address, u32 width, u32 height, u32 stride,
                               MathUtil::Rectangle<int>* display_rect);
 
   virtual void BindTextures(BitSet32 used_textures, const std::array<SamplerState, 8>& samplers);
-  void CopyRenderTargetToTexture(u32 dstAddr, EFBCopyFormat dstFormat, u32 width, u32 height,
-                                 u32 dstStride, bool is_depth_copy,
-                                 const MathUtil::Rectangle<int>& srcRect, bool isIntensity,
-                                 bool scaleByHalf, float y_scale, float gamma, bool clamp_top,
-                                 bool clamp_bottom,
-                                 const CopyFilterCoefficients::Values& filter_coefficients);
-
-  void ScaleTextureCacheEntryTo(RcTcacheEntry& entry, u32 new_width, u32 new_height);
+  void CopyRenderTargetToCache(RcTcacheEntry entry, EFBCopyFormat dstFormat, u32 width, u32 height,
+                               bool is_depth_copy, const MathUtil::Rectangle<int>& srcRect,
+                               bool isIntensity, bool scaleByHalf, float y_scale, float gamma,
+                               bool clamp_top, bool clamp_bottom,
+                               const CopyFilterCoefficients::Values& filter_coefficients);
 
   // Flushes all pending EFB copies to emulated RAM.
   void FlushEFBCopies();
@@ -314,6 +368,41 @@ public:
   static SamplerState GetSamplerState(u32 index, float custom_tex_scale, bool custom_tex,
                                       bool has_arbitrary_mips);
 
+  static EmulatedGraphics::FramebufferCopyResolvedData
+  ResolveFramebufferCopyData(const FrameBufferCopyRawData& copy_data);
+
+  static void RenderPaletteEntry(u32 texel_buffer_offset, const RcTcacheEntry& entry,
+                                 AbstractTexture* texture, TLUTFormat tlutfmt);
+  static void RenderReinterpretEntry(const RcTcacheEntry& entry, AbstractTexture* texture,
+                                     TextureFormat old_format, TextureFormat new_format);
+  void RenderScaledEntry(const RcTcacheEntry& destination_entry, u32 new_width, u32 new_height,
+                         AbstractTexture* src_texture);
+
+  void ApplyMaterialToCacheEntry(const VideoCommon::MaterialResource& material, TCacheEntry* entry);
+
+  void UninitializeMemory(RcTcacheEntry entry);
+
+  void
+  CompleteVRAMFramebufferCopy(RcTcacheEntry entry,
+                              const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data);
+  void
+  CompleteRAMFramebufferCopy(FramebufferManager* frame_buffer_manager,
+                             const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data,
+                             const RcTcacheEntry& entry);
+
+  RcTcacheEntry
+  DeferFramebufferCopy(FramebufferManager* frame_buffer_manager,
+                       const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data);
+
+  RcTcacheEntry RenderFramebufferCopy(
+      PixelShaderManager& pixel_shader_manager,
+      const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data) override;
+
+  void UninitializeFramebufferMemory(
+      const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data) override;
+
+  void ExecutePartialTextureUpdate(PartialTextureUpdateContext context);
+
 protected:
   // Decodes the specified data to the GPU texture specified by entry.
   // Returns false if the configuration is not supported.
@@ -325,8 +414,9 @@ protected:
                           u32 aligned_height, u32 row_stride, const u8* palette,
                           TLUTFormat palette_format);
 
-  virtual void CopyEFB(AbstractStagingTexture* dst, const EFBCopyParams& params, u32 native_width,
-                       u32 bytes_per_row, u32 num_blocks_y, u32 memory_stride,
+  virtual void CopyEFB(AbstractStagingTexture* dst, FramebufferManager* frame_buffer_manager,
+                       const EFBCopyParams& params, u32 native_width, u32 bytes_per_row,
+                       u32 num_blocks_y, u32 memory_stride,
                        const MathUtil::Rectangle<int>& src_rect, bool scale_by_half,
                        bool linear_filter, float y_scale, float gamma, bool clamp_top,
                        bool clamp_bottom, const std::array<u32, 3>& filter_coefficients);
@@ -350,7 +440,7 @@ private:
   void InvalideOverlappingTextures(u32 dstStride, u32 dstAddr, u32 bytes_per_row, u32 num_blocks_y,
                                    bool copy_to_vram, bool copy_to_ram);
 
-  TCacheEntry* LoadImpl(u32 stage, bool force_reload);
+  RcTcacheEntry LoadImpl(u32 stage, bool force_reload);
 
   bool CreateUtilityTextures();
 
@@ -363,18 +453,25 @@ private:
 
   RcTcacheEntry GetXFBFromCache(u32 address, u32 width, u32 height, u32 stride);
 
-  RcTcacheEntry ApplyPaletteToEntry(RcTcacheEntry& entry, const u8* palette, TLUTFormat tlutfmt);
+  std::pair<RcTcacheEntry, u32> CreatePaletteEntryWithOffset(const RcTcacheEntry& entry,
+                                                             const u8* palette);
 
-  RcTcacheEntry ReinterpretEntry(const RcTcacheEntry& existing_entry, TextureFormat new_format);
+  RcTcacheEntry CreateReinterpretEntry(const RcTcacheEntry& existing_entry,
+                                       TextureFormat new_format);
 
+  PartialTextureUpdateContext
+  BuildPartialUpdateContext(const RcTcacheEntry& target, const RcTcacheEntry& source,
+                            const u8* palette, TLUTFormat tlutfmt, bool is_palette_texture,
+                            u32 block_width, u32 block_height, u32 block_size, u32 numBlocksX);
   RcTcacheEntry DoPartialTextureUpdates(RcTcacheEntry& entry_to_update, const u8* palette,
                                         TLUTFormat tlutfmt);
   void StitchXFBCopy(RcTcacheEntry& entry_to_update);
 
   void CheckTempSize(size_t required_size);
 
-  RcTcacheEntry AllocateCacheEntry(const TextureConfig& config);
-  std::optional<TexPoolEntry> AllocateTexture(const TextureConfig& config);
+  RcTcacheEntry AllocateCacheEntry(const TextureConfig& config, std::string_view name = "");
+  std::optional<TexPoolEntry> AllocateTexture(const TextureConfig& config,
+                                              std::string_view name = "");
   TexPool::iterator FindMatchingTextureFromPool(const TextureConfig& config);
   TexAddrCache::iterator GetTexCacheIter(TCacheEntry* entry);
 
@@ -399,7 +496,7 @@ private:
   // Flushes a pending EFB copy to RAM from the host to the guest RAM.
   void WriteEFBCopyToRAM(u8* dst_ptr, u32 width, u32 height, u32 stride,
                          std::unique_ptr<AbstractStagingTexture> staging_texture);
-  void FlushEFBCopy(TCacheEntry* entry);
+  void FlushFramebufferCopy(const std::shared_ptr<TCacheEntry>& entry) override;
 
   // Returns a staging texture of the maximum EFB copy size.
   std::unique_ptr<AbstractStagingTexture> GetEFBCopyStagingTexture();
@@ -411,7 +508,17 @@ private:
   void DoSaveState(PointerWrap& p);
   void DoLoadState(PointerWrap& p);
 
-  void ApplyMaterialToCacheEntry(const VideoCommon::MaterialResource& material, TCacheEntry* entry);
+  RcTcacheEntry SetupCopyEntry(FramebufferManager* frame_buffer_manager,
+                               const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data,
+                               std::string_view name);
+  void CopyRenderTargetToVRam(RcTcacheEntry& entry, FramebufferManager* frame_buffer_manager,
+                              const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data);
+  void CopyRenderTargetToRam(RcTcacheEntry& entry, FramebufferManager* frame_buffer_manager,
+                             u8* dst,
+                             const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data,
+                             bool defer_stage, bool defer_write);
+  void FinalizeFramebufferCopy(RcTcacheEntry& entry,
+                               const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data);
 
   // m_textures_by_address is the authoritive version of what's actually "in" the texture cache
   // but it's possible for invalidated TCache entries to live on elsewhere
@@ -424,6 +531,10 @@ private:
   // m_bound_textures are actually active in the current draw
   // It's valid for textures to be in here after they've been invalidated
   std::array<RcTcacheEntry, 8> m_bound_textures{};
+
+  // Overlapping entries collected during partial texture updates.
+  // Kept as a member so the buffer capacity is preserved across calls.
+  std::vector<RcTcacheEntry> m_partial_texture_update_entries;
 
   TexPool m_texture_pool;
   u64 m_last_entry_id = 0;
