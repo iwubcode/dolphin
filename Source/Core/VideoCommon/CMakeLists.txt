@@ -223,6 +223,7 @@ PRIVATE
   implot
   glslang
   tinygltf
+  watcher
 )
 
 if(_M_X86_64)
