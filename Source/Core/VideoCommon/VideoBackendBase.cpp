@@ -51,6 +51,7 @@
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/GeometryShaderManager.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/CustomResourceManager.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModManager.h"
 #include "VideoCommon/OnScreenDisplay.h"
 #include "VideoCommon/PixelEngine.h"
@@ -343,12 +344,16 @@ bool VideoBackendBase::InitializeShared(std::unique_ptr<AbstractGfx> gfx,
   }
 
   g_shader_cache->InitializeShaderCache();
+  system.GetCustomResourceManager().Initialize();
 
   return true;
 }
 
 void VideoBackendBase::ShutdownShared()
 {
+  auto& system = Core::System::GetInstance();
+  system.GetCustomResourceManager().Shutdown();
+
   g_frame_dumper.reset();
   g_presenter.reset();
 
@@ -370,7 +375,6 @@ void VideoBackendBase::ShutdownShared()
 
   m_initialized = false;
 
-  auto& system = Core::System::GetInstance();
   VertexLoaderManager::Clear();
   system.GetFifo().Shutdown();
 }
