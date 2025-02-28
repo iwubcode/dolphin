@@ -5,6 +5,8 @@
 
 #include <map>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 #include "Common/BitSet.h"
@@ -12,24 +14,41 @@
 #include "Common/MathUtil.h"
 #include "Common/Matrix.h"
 #include "VideoCommon/CPUCull.h"
+#include "VideoCommon/IMeshRenderer.h"
 #include "VideoCommon/IndexGenerator.h"
 #include "VideoCommon/RenderState.h"
+#include "VideoCommon/Resources/MaterialResource.h"
+#include "VideoCommon/Resources/MeshResource.h"
 #include "VideoCommon/ShaderCache.h"
 #include "VideoCommon/VideoEvents.h"
 
+class AbstractPipeline;
 struct CustomPixelShaderContents;
 class DataReader;
+class FramebufferManager;
 class GeometryShaderManager;
 class NativeVertexFormat;
 class PixelShaderManager;
 class PointerWrap;
 struct PortableVertexDeclaration;
 
+namespace EmulatedGraphics
+{
+struct DrawCallData;
+}
+
 namespace GraphicsModSystem
 {
-struct MaterialResource;
-struct MeshResource;
+enum class DrawCallID : unsigned long long;
+
+struct DrawDataView;
 }  // namespace GraphicsModSystem
+
+namespace VideoCommon
+{
+class CameraManager;
+class SkeletonManager;
+}  // namespace VideoCommon
 
 struct Slope
 {
@@ -54,7 +73,18 @@ namespace OpcodeDecoder
 enum class Primitive : u8;
 }
 
-class VertexManagerBase
+/// A host-visible region of the utility vertex arena, returned by
+/// LockUtilityBuffers. The vertex and index pointers may alias the same
+/// underlying buffer (e.g. D3D11 interleaves them in one rotating buffer).
+struct UtilityRegion
+{
+  u8* vertex_pointer;   // host-visible destination for vertex bytes
+  u16* index_pointer;   // host-visible destination for index bytes
+  u32 vertex_offset;    // bytes from the arena base (for out_base_* math)
+  u32 index_offset;     // bytes from the arena base
+};
+
+class VertexManagerBase : public IMeshRenderer
 {
 private:
   // 3 pos
@@ -144,9 +174,21 @@ public:
 
   // Utility pipeline drawing (e.g. EFB copies, post-processing, UI).
   virtual void UploadUtilityUniforms(const void* uniforms, u32 uniforms_size);
+
+  /// Transient upload into the utility vertex arena. Never recorded, never replayed.
+  /// Used by ImGui / OnScreenUI and EFB poke. Same signature as the old
+  /// UploadUtilityVertices.
   void UploadUtilityVertices(const void* vertices, u32 vertex_stride, u32 num_vertices,
                              const u16* indices, u32 num_indices, u32* out_base_vertex,
                              u32* out_base_index);
+
+  /// Recorded upload into the game vertex arena. Byte-identical behavior to the old
+  /// UploadUtilityVertices (same ResetBuffer/CommitBuffer/SetBuffer sequence, same
+  /// ASSERT(m_is_flushed)). Used by ProcessCustomMeshChunk ONLY, because its
+  /// base_vertex/base_index offsets are recorded into snapshots and replayed.
+  void UploadGameVertices(const void* vertices, u32 vertex_stride, u32 num_vertices,
+                          const u16* indices, u32 num_indices, u32* out_base_vertex,
+                          u32* out_base_index);
 
   // Determine how many bytes there are in each element of the texel buffer.
   // Needed for alignment and stride calculations.
@@ -177,22 +219,47 @@ public:
   // Call at the end of a frame.
   void OnEndFrame();
 
+  // Passes on a clear from the game to any additional cameras
+  void ClearAdditionalCameras(const MathUtil::Rectangle<int>& rc, bool color_enable,
+                              bool alpha_enable, bool z_enable, u32 color, u32 z);
+
+  // Defer the emulated mesh until later
+  void DeferEmulatedMesh(const GraphicsModSystem::DrawDataView& draw_data,
+                         const Common::Matrix44& custom_transform,
+                         std::vector<EmulatedGraphics::DrawCallData>* deferred_data);
+
+  void DeferEmulatedMesh(const GraphicsModSystem::DrawDataView& draw_data,
+                         const VideoCommon::MaterialResource::Data& material_data,
+                         const Common::Matrix44& custom_transform,
+                         std::vector<EmulatedGraphics::DrawCallData>* deferred_data);
+
+  void DeferCustomMesh(const GraphicsModSystem::DrawDataView& draw_data,
+                       GraphicsModSystem::DrawCallID draw_call,
+                       const VideoCommon::MeshResource::Data& mesh_data,
+                       const Common::Matrix44& custom_transform, bool ignore_mesh_transform,
+                       VideoCommon::SkeletonInstance* skeleton_instance,
+                       std::vector<EmulatedGraphics::DrawCallData>* deferred_data);
+
   // Draws the normal mesh sourced from emulation
-  void DrawEmulatedMesh();
+  void DrawEmulatedMesh(const GraphicsModSystem::DrawDataView& draw_data,
+                        const Common::Matrix44& custom_transform) override;
 
   // Draws the normal mesh sourced from emulation, with a custom shader and/or transform
-  void DrawEmulatedMesh(GraphicsModSystem::MaterialResource* material_resource,
-                        const Common::Matrix44& custom_transform);
+  void DrawEmulatedMesh(const GraphicsModSystem::DrawDataView& draw_data,
+                        const VideoCommon::MaterialResource::Data& material_data,
+                        const Common::Matrix44& custom_transform) override;
 
   // Draw a custom mesh sourced from a mod, with a custom shader and custom vertex information
-  void DrawCustomMesh(GraphicsModSystem::MeshResource* mesh_resource,
-                      const Common::Matrix44& custom_transform, bool ignore_mesh_transform);
+  void DrawCustomMesh(const GraphicsModSystem::DrawDataView& draw_data,
+                      GraphicsModSystem::DrawCallID draw_call,
+                      const VideoCommon::MeshResource::Data& mesh_data,
+                      const Common::Matrix44& custom_transform, bool ignore_mesh_transform,
+                      VideoCommon::SkeletonInstance* skeleton_instance) override;
+
+  void DrawGraphicsData(FramebufferManager* framebuffer_manager,
+                        const EmulatedGraphics::DrawCallData& draw_call_data);
 
 protected:
-  void RedrawWithNewMaterial(u32 base_vertex, u32 base_index, u32 index_size,
-                             PrimitiveType primitive_type,
-                             GraphicsModSystem::MaterialResource* material_resource);
-
   // When utility uniforms are used, the GX uniforms need to be re-written afterwards.
   static void InvalidateConstants();
 
@@ -202,6 +269,25 @@ protected:
   // Commits/uploads the current batch of vertices.
   virtual void CommitBuffer(u32 num_vertices, u32 vertex_stride, u32 num_indices,
                             u32* out_base_vertex, u32* out_base_index);
+  virtual void SetBuffer(u32 vertex_stride);
+
+  // Utility vertex arena provider primitives. The base class owns the flow
+  // (UploadUtilityVertices); backends own the buffers.
+  //
+  // Reserve vertex_bytes + index_bytes of host-visible utility storage.
+  // Backends reserve EXACT bytes (never MAXVBUFFERSIZE) — the utility arena can
+  // only ever recycle itself, never sweep a game region. index_bytes may be 0
+  // (EFB poke) — tolerate it. Returns nullopt if the request cannot be
+  // satisfied (the caller skips the draw; never panic).
+  //
+  // vertex_stride is the per-vertex byte stride; the backend MUST align the
+  // returned vertex_offset to it, because the base flow computes
+  // out_base_vertex = vertex_offset / vertex_stride.
+  virtual std::optional<UtilityRegion> LockUtilityBuffers(u32 vertex_bytes, u32 index_bytes,
+                                                          u32 vertex_stride);
+  // Commit AND bind the utility buffers for the caller's immediate draws
+  // (utility callers issue g_gfx->DrawIndexed directly — no SetBuffer).
+  virtual void UnlockUtilityBuffers(u32 vertex_bytes, u32 index_bytes);
 
   // Uploads uniform buffers for GX draws.
   virtual void UploadUniforms();
@@ -245,8 +331,30 @@ private:
   // Minimum number of draws per command buffer when attempting to preempt a readback operation.
   static constexpr u32 MINIMUM_DRAW_CALLS_PER_COMMAND_BUFFER_FOR_READBACK = 10;
 
+  enum class DrawAction
+  {
+    Draw,
+    Defer
+  };
+
   void UpdatePipelineConfig();
   void UpdatePipelineObject();
+
+  // Shared internal helpers for emulated mesh handling (direct draw + deferred build)
+  void ProcessEmulatedMesh(const GraphicsModSystem::DrawDataView& draw_data,
+                           const AbstractPipeline* pipeline,
+                           const Common::Matrix44& custom_transform, DrawAction action,
+                           std::vector<EmulatedGraphics::DrawCallData>* deferred_out);
+
+  // Shared internal helpers for custom mesh handling (per-chunk)
+  void ProcessCustomMeshChunk(const GraphicsModSystem::DrawDataView& draw_data,
+                              const VideoCommon::MeshResource::MeshChunk& chunk, int chunk_index,
+                              GraphicsModSystem::DrawCallID draw_call,
+                              const Common::Matrix44& custom_transform, bool ignore_mesh_transform,
+                              VideoCommon::SkeletonInstance* skeleton_instance, DrawAction action,
+                              std::vector<EmulatedGraphics::DrawCallData>* deferred_out);
+
+  std::optional<u64> m_last_camera_id;
 
   bool m_is_flushed = true;
   FlushStatistics m_flush_statistics = {};
