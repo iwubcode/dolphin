@@ -839,9 +839,6 @@ void WriteCustomShaderStructImpl(ShaderCode* out, u32 num_stages, bool per_pixel
                texcoord);
   }
 
-  if (per_pixel_lighting)
-    GenerateCustomLightingImplementation(out, uid_data->lighting, "colors_");
-
   for (u32 i = 0; i < 16; i++)
   {
     // Shader compilation complains if every struct isn't initialized
