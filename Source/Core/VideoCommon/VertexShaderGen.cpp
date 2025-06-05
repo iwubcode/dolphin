@@ -1249,13 +1249,13 @@ void WriteVertexBody(APIType api_type, const ShaderHostConfig& host_config,
     if (has_color0_texture_coordinate)
     {
       out.Write("\tvec4 vertex_lighting_0 = dolphin_calculate_lighting_chn0(vertex_input.color_0, "
-                "vertex_input.position, "
+                "vertex_input.position.xyz, "
                 "vertex_input.normal);\n");
     }
     if (has_color1_texture_coordinate)
     {
       out.Write("\tvec4 vertex_lighting_1 = dolphin_calculate_lighting_chn1(vertex_input.color_1, "
-                "vertex_input.position, "
+                "vertex_input.position.xyz, "
                 "vertex_input.normal);\n");
     }
   }
@@ -1264,7 +1264,7 @@ void WriteVertexBody(APIType api_type, const ShaderHostConfig& host_config,
     if (uid_data->numColorChans > 0)
     {
       out.Write("\tvec4 vertex_lighting_0 = dolphin_calculate_lighting_chn0(vertex_input.color_0, "
-                "vertex_input.position, "
+                "vertex_input.position.xyz, "
                 "vertex_input.normal);\n");
       out.Write("\tvertex_output.color_0 = vertex_lighting_0;\n");
     }
@@ -1273,7 +1273,7 @@ void WriteVertexBody(APIType api_type, const ShaderHostConfig& host_config,
       if (has_color0_texture_coordinate)
       {
         out.Write("\tvec4 vertex_lighting_0 = "
-                  "dolphin_calculate_lighting_chn0(vertex_input.color_0, vertex_input.position,"
+                  "dolphin_calculate_lighting_chn0(vertex_input.color_0, vertex_input.position.xyz,"
                   "vertex_input.normal);\n");
       }
     }
@@ -1281,7 +1281,7 @@ void WriteVertexBody(APIType api_type, const ShaderHostConfig& host_config,
     if (uid_data->numColorChans == 2)
     {
       out.Write("\tvec4 vertex_lighting_1 = dolphin_calculate_lighting_chn1(vertex_input.color_1, "
-                "vertex_input.position, "
+                "vertex_input.position.xyz, "
                 "vertex_input.normal);\n");
       out.Write("\tvertex_output.color_1 = vertex_lighting_1;\n");
     }

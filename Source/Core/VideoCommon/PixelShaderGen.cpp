@@ -2595,8 +2595,8 @@ void WriteFragmentBody(APIType api_type, const ShaderHostConfig& host_config,
 
   out.Write("\tint4 c0 = " I_COLORS "[1], c1 = " I_COLORS "[2], c2 = " I_COLORS
             "[3], prev = " I_COLORS "[0];\n"
-            "\tint4 rastemp = int4(0, 0, 0, 0), textemp = int4(0, 0, 0, 0), konsttemp = int4(0, 0, "
-            "0, 0);\n"
+            "\tint4 rastemp = int4(0, 0, 0, 0), rawtextemp = int4(0, 0, 0, 0), "
+            "textemp = int4(0, 0, 0, 0), konsttemp = int4(0, 0, 0, 0);\n"
             "\tint3 comp16 = int3(1, 256, 0), comp24 = int3(1, 256, 256*256);\n"
             "\tint alphabump=0;\n"
             "\tint3 tevcoord=int3(0, 0, 0);\n"
@@ -2609,7 +2609,7 @@ void WriteFragmentBody(APIType api_type, const ShaderHostConfig& host_config,
   {
     if (uid_data->numColorChans > 0)
     {
-      out.Write("\tcol0 = dolphin_calculate_lighting_chn0(col0, vec4(frag_input.position, 1), "
+      out.Write("\tcol0 = dolphin_calculate_lighting_chn0(col0, frag_input.position, "
                 "frag_input.normal);\n");
     }
     else
@@ -2621,7 +2621,7 @@ void WriteFragmentBody(APIType api_type, const ShaderHostConfig& host_config,
 
     if (uid_data->numColorChans == 2)
     {
-      out.Write("\tcol1 = dolphin_calculate_lighting_chn1(col1, vec4(frag_input.position, 1), "
+      out.Write("\tcol1 = dolphin_calculate_lighting_chn1(col1, frag_input.position, "
                 "frag_input.normal);\n");
     }
     else
@@ -2699,7 +2699,7 @@ void WriteFragmentBody(APIType api_type, const ShaderHostConfig& host_config,
     }
   }
 
-  out.Write("\tfrag_output.last_texture = textemp;\n");
+  out.Write("\tfrag_output.last_texture = rawtextemp;\n");
   out.Write("\tfrag_output.main = prev;\n");
 }
 
@@ -2947,6 +2947,10 @@ ShaderCode WriteFullShader(APIType api_type, const ShaderHostConfig& host_config
   for (u32 i = 0; i < uid_data->genMode_numtexgens; i++)
   {
     out.Write("\tfrag_input.tex{0} = tex{0};\n", i);
+  }
+  for (u32 i = uid_data->genMode_numtexgens; i < 8; i++)
+  {
+    out.Write("\tfrag_input.tex{0} = vec3(0, 0, 0);\n", i);
   }
 
   if (!custom_pixel.empty())
