@@ -1,0 +1,574 @@
+// Copyright 2026 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#include "VideoCommon/GraphicsModSystem/Runtime/CPUSkinning.h"
+
+#include <array>
+#include <set>
+
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+#include <Eigen/Sparse>
+
+#include "Common/Logging/Log.h"
+
+#include "VideoCommon/GraphicsModSystem/Runtime/SkeletonManager.h"
+
+static Common::Vec3 ReadVec3(const u8* vert_ptr, u32 v3_offset)
+{
+  Common::Vec3 v3_result;
+  std::memcpy(&v3_result.x, vert_ptr + v3_offset, sizeof(float));
+  std::memcpy(&v3_result.y, vert_ptr + sizeof(float) + v3_offset, sizeof(float));
+  std::memcpy(&v3_result.z, vert_ptr + sizeof(float) * 2 + v3_offset, sizeof(float));
+  return v3_result;
+}
+
+static std::array<float, 4> ReadWeights(const u8* vert_ptr, u32 weight_offset)
+{
+  std::array<float, 4> weight_data;
+  std::memcpy(&weight_data[0], vert_ptr + weight_offset, sizeof(float));
+  std::memcpy(&weight_data[1], vert_ptr + sizeof(float) + weight_offset, sizeof(float));
+  std::memcpy(&weight_data[2], vert_ptr + sizeof(float) * 2 + weight_offset, sizeof(float));
+  std::memcpy(&weight_data[3], vert_ptr + sizeof(float) * 3 + weight_offset, sizeof(float));
+  return weight_data;
+}
+
+static std::array<int, 4> ReadTransformIds(const u8* vert_ptr, u32 transform_id_offset)
+{
+  std::array<int, 4> transform_ids;
+  std::memcpy(&transform_ids[0], vert_ptr + transform_id_offset, sizeof(u32));
+  std::memcpy(&transform_ids[1], vert_ptr + sizeof(u32) + transform_id_offset, sizeof(u32));
+  std::memcpy(&transform_ids[2], vert_ptr + sizeof(u32) * 2 + transform_id_offset, sizeof(u32));
+  std::memcpy(&transform_ids[3], vert_ptr + sizeof(u32) * 3 + transform_id_offset, sizeof(u32));
+  return transform_ids;
+}
+
+static void WriteVec3(u8* vert_ptr, u32 v3_offset, const Common::Vec3& v3_value)
+{
+  std::memcpy(vert_ptr + v3_offset, &v3_value.x, sizeof(float));
+  std::memcpy(vert_ptr + v3_offset + sizeof(float), &v3_value.y, sizeof(float));
+  std::memcpy(vert_ptr + v3_offset + sizeof(float) * 2, &v3_value.z, sizeof(float));
+}
+
+/**
+ * @brief Solves for bone transforms using the weighted Kabsch algorithm (SVD).
+ *
+ * This function derives the best-fit rotation and translation for each bone by comparing
+ * the 'rest' positions (the bake state) to the 'native' positions (the game's current frame).
+ *
+ * @param original_positions The vertex positions at the time of the high-poly capture/bake.
+ * @param native_draw_data The current frame's emulated or native vertex data.
+ * @param out_bone_matrices Resulting Affine transforms (Rotation + Translation) per bone.
+ * @param out_bone_total_weights Cumulative confidence for each bone (used for fallback/blending).
+ */
+static void SolveChunkBoneTransforms(GraphicsModSystem::DrawCallID draw_call,
+                                     const VideoCommon::SkinningRig& replacement_rig,
+                                     const std::vector<Eigen::Vector3f>& original_positions,
+                                     const GraphicsModSystem::DrawDataView& native_draw_data,
+                                     std::vector<Eigen::Affine3f>& out_bone_matrices,
+                                     std::vector<float>& out_bone_total_weights)
+{
+  auto it = replacement_rig.draw_call_rig_details.find(draw_call);
+  if (it == replacement_rig.draw_call_rig_details.end())
+    return;
+
+  const auto& chunk_rig_data = it->second;
+  const auto get_position = [](int index, const GraphicsModSystem::DrawDataView& native_draw_data) {
+    const u8* read_ptr =
+        native_draw_data.vertex_data + index * native_draw_data.vertex_format->GetVertexStride();
+    const auto native_position =
+        ReadVec3(read_ptr, native_draw_data.vertex_format->GetVertexDeclaration().position.offset);
+    return Eigen::Vector3f(native_position.x, native_position.y, native_position.z);
+  };
+
+  for (auto const& bone : chunk_rig_data.bones)
+  {
+    const size_t N = bone.original_indices.size();
+
+    // 1. Compute Centroids of the points as they are in the WORLD
+    float total_w = 0.0f;
+    Eigen::Vector3f c_rest = Eigen::Vector3f::Zero();
+    Eigen::Vector3f c_curr = Eigen::Vector3f::Zero();
+
+    if (original_positions.size() < N)
+      continue;
+
+    for (size_t i = 0; i < N; ++i)
+    {
+      float w = bone.weights[i];
+      c_rest += w * original_positions[bone.original_indices[i]];
+      c_curr += w * get_position(bone.original_indices[i], native_draw_data);
+      total_w += w;
+    }
+
+    if (total_w < 0.001f)
+      continue;  // Skip if no meaningful weight
+
+    c_rest /= (float)total_w;
+    c_curr /= (float)total_w;
+
+    // 2. Covariance H
+    Eigen::Matrix3f H = Eigen::Matrix3f::Zero();
+    for (size_t i = 0; i < N; ++i)
+    {
+      float w = bone.weights[i];
+      Eigen::Vector3f p_r = original_positions[bone.original_indices[i]] - c_rest;
+      Eigen::Vector3f p_c = get_position(bone.original_indices[i], native_draw_data) - c_curr;
+      H += w * (p_c * p_r.transpose());  // Order: Current * Rest^T
+    }
+
+    // 3. SVD for Rotation
+    Eigen::JacobiSVD<Eigen::Matrix3f> svd(H, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3f R = svd.matrixU() * svd.matrixV().transpose();
+    if (R.determinant() < 0)
+    {
+      Eigen::Matrix3f V = svd.matrixV();
+      V.col(2) *= -1.0f;
+      R = svd.matrixU() * V.transpose();
+    }
+
+    // 4. Transform
+    out_bone_matrices[bone.global_bone_id].linear() = R;
+    out_bone_matrices[bone.global_bone_id].translation() = c_curr - R * c_rest;
+    out_bone_total_weights[bone.global_bone_id] = total_w;
+  }
+}
+
+static void GetGPUSkinnedTransforms(GraphicsModSystem::DrawCallID draw_call,
+                                    const VideoCommon::SkinningRig& replacement_rig,
+                                    const std::vector<Eigen::Vector3f>& original_positions,
+                                    const GraphicsModSystem::DrawDataView& native_draw_data,
+                                    std::vector<Eigen::Affine3f>& out_bone_matrices,
+                                    std::vector<float>& out_bone_total_weights)
+{
+  auto it = replacement_rig.draw_call_rig_details.find(draw_call);
+  if (it == replacement_rig.draw_call_rig_details.end())
+    return;
+
+  std::set<int> gpu_skinning_ids;
+  for (std::size_t i = 0; i < native_draw_data.vertex_count; i++)
+  {
+    // Position transform is actually vertex specific
+    u32 gpu_skin_index;
+    std::memcpy(&gpu_skin_index,
+                native_draw_data.vertex_data +
+                    i * native_draw_data.vertex_format->GetVertexStride() +
+                    native_draw_data.vertex_format->GetVertexDeclaration().posmtx.offset,
+                sizeof(u32));
+    gpu_skinning_ids.insert(static_cast<int>(gpu_skin_index));
+  }
+
+  const auto get_gpu_skinning_transform =
+      [](int gpu_skin_index, const GraphicsModSystem::DrawDataView& native_draw_data) {
+        Common::Matrix44 position_transform = Common::Matrix44::Identity();
+        for (std::size_t i = 0; i < 3; i++)
+        {
+          position_transform.data[i * 4 + 0] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][0];
+          position_transform.data[i * 4 + 1] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][1];
+          position_transform.data[i * 4 + 2] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][2];
+          position_transform.data[i * 4 + 3] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][3];
+        }
+        position_transform.data[12] = 0;
+        position_transform.data[13] = 0;
+        position_transform.data[14] = 0;
+        position_transform.data[15] = 1;
+
+        Eigen::Map<Eigen::Matrix4f> m(position_transform.data.data());
+        return m;
+      };
+
+  for (const auto gpu_skinning_id : gpu_skinning_ids)
+  {
+    if (const auto gpu_iter = it->second.gpu_skinned_data.find(gpu_skinning_id);
+        gpu_iter != it->second.gpu_skinned_data.end())
+    {
+      auto& id = gpu_iter->second.global_bone_id;
+
+      if (id >= out_bone_matrices.size())
+      {
+        /*WARN_LOG_FMT(VIDEO, "Draw call {} with global bone {} is larger than the max size {}",
+                     std::to_underlying(draw_call), id, out_bone_matrices.size());*/
+        continue;
+      }
+
+      const auto gpu_skinning_transform =
+          get_gpu_skinning_transform(gpu_skinning_id, native_draw_data);
+      Eigen::Map<const Eigen::Matrix4f> captured_inverse(
+          gpu_iter->second.inverse_transform.data.data());
+      out_bone_matrices[id] = gpu_skinning_transform.transpose() * captured_inverse.transpose();
+      out_bone_total_weights[id] = 99;
+    }
+  }
+
+  /*const auto& chunk_rig_data = it->second;
+
+  const auto get_position = [](int index, const GraphicsModSystem::DrawDataView& native_draw_data) {
+    const u8* read_ptr =
+        native_draw_data.vertex_data + index * native_draw_data.vertex_format->GetVertexStride();
+    const auto native_position =
+        ReadVec3(read_ptr, native_draw_data.vertex_format->GetVertexDeclaration().position.offset);
+    return Eigen::Vector3f(native_position.x, native_position.y, native_position.z);
+  };
+
+  const auto get_gpu_skinning_transform =
+      [](int gpu_skin_index, const GraphicsModSystem::DrawDataView& native_draw_data) {
+        Common::Matrix44 position_transform = Common::Matrix44::Identity();
+        for (std::size_t i = 0; i < 3; i++)
+        {
+          position_transform.data[i * 4 + 0] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][0];
+          position_transform.data[i * 4 + 1] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][1];
+          position_transform.data[i * 4 + 2] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][2];
+          position_transform.data[i * 4 + 3] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][3];
+        }
+        position_transform.data[12] = 0;
+        position_transform.data[13] = 0;
+        position_transform.data[14] = 0;
+        position_transform.data[15] = 1;
+
+        Eigen::Map<Eigen::Matrix4f> m(position_transform.data.data());
+        return m;
+      };
+
+  for (auto const& bone : chunk_rig_data.bones)
+  {
+    if (bone.gpu_skinned_id == -1)
+    {
+      WARN_LOG_FMT(VIDEO, "Global bone {} has unset gpu skin id", bone.global_bone_id);
+      continue;
+    }
+
+    if (gpu_skinning_ids.count(bone.gpu_skinned_id) == 0)
+    {
+      WARN_LOG_FMT(
+          VIDEO,
+          "Draw call {} with global bone {} has sim id {} that isn't in original native list",
+          std::to_underlying(draw_call), bone.global_bone_id, bone.gpu_skinned_id);
+      continue;
+    }
+
+    if (bone.global_bone_id >= out_bone_matrices.size())
+    {
+      WARN_LOG_FMT(VIDEO, "Draw call {} with global bone {} is out of bounds?",
+                   std::to_underlying(draw_call), bone.global_bone_id);
+      continue;
+    }
+
+    const size_t N = bone.original_indices.size();
+
+    // 1. Compute Centroids of the points as they are in the WORLD
+    float total_w = 0.0f;
+    Eigen::Vector3f c_rest = Eigen::Vector3f::Zero();
+    Eigen::Vector3f c_curr = Eigen::Vector3f::Zero();
+
+    if (original_positions.size() < N)
+      continue;
+
+    const auto sim_transform = get_gpu_skinning_transform(bone.gpu_skinned_id, native_draw_data);
+    Eigen::Affine3f transform;
+    transform.matrix() = sim_transform.transpose();
+
+    for (size_t i = 0; i < N; ++i)
+    {
+      float w = bone.weights[i];
+      c_rest += w * original_positions[bone.original_indices[i]];
+      c_curr +=
+          w * Eigen::Vector3f(transform * get_position(bone.original_indices[i], native_draw_data));
+      total_w += w;
+    }
+
+    if (total_w < 0.001f)
+      continue;  // Skip if no meaningful weight
+
+    c_rest /= (float)total_w;
+    c_curr /= (float)total_w;
+
+    // 2. Covariance H
+    Eigen::Matrix3f H = Eigen::Matrix3f::Zero();
+    for (size_t i = 0; i < N; ++i)
+    {
+      float w = bone.weights[i];
+      Eigen::Vector3f p_r = original_positions[bone.original_indices[i]] - c_rest;
+      Eigen::Vector3f p_c =
+          Eigen::Vector3f(transform * get_position(bone.original_indices[i], native_draw_data)) -
+          c_curr;
+      H += w * (p_c * p_r.transpose());  // Order: Current * Rest^T
+    }
+
+    // 3. SVD for Rotation
+    Eigen::JacobiSVD<Eigen::Matrix3f> svd(H, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3f R = svd.matrixU() * svd.matrixV().transpose();
+    if (R.determinant() < 0)
+    {
+      Eigen::Matrix3f V = svd.matrixV();
+      V.col(2) *= -1.0f;
+      R = svd.matrixU() * V.transpose();
+    }
+
+    // 4. Transform
+    out_bone_matrices[bone.global_bone_id].linear() = R;
+    out_bone_matrices[bone.global_bone_id].translation() = c_curr - R * c_rest;
+    out_bone_total_weights[bone.global_bone_id] = total_w;
+  }*/
+}
+
+/*static void GetGPUSkinnedTransforms(GraphicsModSystem::DrawCallID draw_call,
+                                    const VideoCommon::SkinningRig& replacement_rig,
+                                    const std::vector<Eigen::Vector3f>&,
+                                    const GraphicsModSystem::DrawDataView& native_draw_data,
+                                    std::vector<Eigen::Affine3f>& out_bone_matrices,
+                                    std::vector<float>& out_bone_total_weights)
+{
+  auto it = replacement_rig.draw_call_rig_details.find(draw_call);
+  if (it == replacement_rig.draw_call_rig_details.end())
+  {
+    WARN_LOG_FMT(VIDEO, "Can't find draw {}", std::to_underlying(draw_call));
+    return;
+  }
+
+  std::set<int> gpu_skinning_ids;
+  for (std::size_t i = 0; i < native_draw_data.vertex_count; i++)
+  {
+    // Position transform is actually vertex specific
+    u32 gpu_skin_index;
+    std::memcpy(&gpu_skin_index,
+                native_draw_data.vertex_data +
+                    i * native_draw_data.vertex_format->GetVertexStride() +
+                    native_draw_data.vertex_format->GetVertexDeclaration().posmtx.offset,
+                sizeof(u32));
+    gpu_skinning_ids.insert(static_cast<int>(gpu_skin_index));
+  }
+
+  const auto& chunk_rig_data = it->second;
+
+  const auto get_gpu_skinning_transform =
+      [](int gpu_skin_index, const GraphicsModSystem::DrawDataView& native_draw_data) {
+        Common::Matrix44 position_transform = Common::Matrix44::Identity();
+        for (std::size_t i = 0; i < 3; i++)
+        {
+          position_transform.data[i * 4 + 0] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][0];
+          position_transform.data[i * 4 + 1] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][1];
+          position_transform.data[i * 4 + 2] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][2];
+          position_transform.data[i * 4 + 3] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][3];
+        }
+        position_transform.data[12] = 0;
+        position_transform.data[13] = 0;
+        position_transform.data[14] = 0;
+        position_transform.data[15] = 1;
+
+        Eigen::Map<Eigen::Matrix4f> m(position_transform.data.data());
+        return m;
+      };
+
+  if (chunk_rig_data.bones.empty())
+  {
+    WARN_LOG_FMT(VIDEO, "Draw call {} has no bones!", std::to_underlying(draw_call));
+  }
+
+  for (auto const& bone : chunk_rig_data.bones)
+  {
+    if (bone.gpu_skinned_id == -1)
+    {
+      WARN_LOG_FMT(VIDEO, "Global bone {} has unset gpu skin id", bone.global_bone_id);
+      continue;
+    }
+
+    if (gpu_skinning_ids.count(bone.gpu_skinned_id) == 0)
+    {
+      WARN_LOG_FMT(
+          VIDEO,
+          "Draw call {} with global bone {} has sim id {} that isn't in original native list",
+          std::to_underlying(draw_call), bone.global_bone_id, bone.gpu_skinned_id);
+      continue;
+    }
+
+    if (bone.global_bone_id >= out_bone_matrices.size())
+    {
+      WARN_LOG_FMT(VIDEO, "Draw call {} with global bone {} is out of bounds?",
+                   std::to_underlying(draw_call), bone.global_bone_id);
+      continue;
+    }
+
+    out_bone_matrices[bone.global_bone_id] =
+        get_gpu_skinning_transform(bone.gpu_skinned_id, native_draw_data);
+
+    // GPU skinned bones are prioritized over deduced bones
+    out_bone_total_weights[bone.global_bone_id] = 9999.0;
+  }
+}*/
+
+static void ApplyLinearBlendedSkinning(
+    const VideoCommon::MeshResource::MeshChunk& replacement_chunk,  // The replacement chunk
+    const VideoCommon::SkinningRig& replacement_rig,
+    const std::vector<Eigen::Affine3f>& bone_matrices,  // Output from SolveChunkBoneTransforms
+    std::vector<u8>* out)                               // The final data to be written
+{
+  const auto chunk_stride = replacement_chunk.GetVertexStride();
+  const auto& chunk_declaration = replacement_chunk.GetNativeVertexFormat()->GetVertexDeclaration();
+  for (std::size_t i = 0; i < replacement_chunk.GetVertexCount(); i++)
+  {
+    const u8* read_ptr = replacement_chunk.GetVertexData().data() + i * chunk_stride;
+    u8* write_ptr = out->data() + i * chunk_stride;
+
+    const auto replacement_weights = ReadWeights(read_ptr, chunk_declaration.weights.offset);
+    const auto replacement_bone_ids = ReadTransformIds(read_ptr, chunk_declaration.posmtx.offset);
+
+    {
+      const auto replacement_position = ReadVec3(read_ptr, chunk_declaration.position.offset);
+      const Eigen::Vector3f pos(replacement_position.x, replacement_position.y,
+                                replacement_position.z);
+
+      Eigen::Vector3f blended_pos = Eigen::Vector3f::Zero();
+
+      for (int k = 0; k < 4; ++k)
+      {
+        const float w = replacement_weights[k];
+        if (w > 0.0f)
+        {
+          const int b_id = replacement_bone_ids[k];
+          if (b_id >= bone_matrices.size())
+          {
+            /*WARN_LOG_FMT(VIDEO, "LBS with global bone {} is larger than the max size {}", b_id,
+                         bone_matrices.size());*/
+            continue;
+          }
+
+          // Apply the solved transform for this bone
+          // Position uses the full Transform (Rotation + Translation)
+          blended_pos += w * (bone_matrices[b_id] * pos);
+        }
+      }
+
+      const Common::Vec3 blended_position(blended_pos.x(), blended_pos.y(), blended_pos.z());
+      WriteVec3(write_ptr, chunk_declaration.position.offset, blended_position);
+    }
+
+    if (chunk_declaration.normals.size() > 0 && chunk_declaration.normals[0].enable)
+    {
+      const auto replacement_normal = ReadVec3(read_ptr, chunk_declaration.normals[0].offset);
+      const Eigen::Vector3f normal(replacement_normal.x, replacement_normal.y,
+                                   replacement_normal.z);
+
+      Eigen::Vector3f blended_norm = Eigen::Vector3f::Zero();
+
+      for (int k = 0; k < 4; ++k)
+      {
+        const float w = replacement_weights[k];
+        if (w > 0.0f)
+        {
+          const int b_id = replacement_bone_ids[k];
+
+          // Apply the solved transform for this bone
+          // Normal uses ONLY the Rotation (Translation doesn't affect direction)
+          blended_norm += w * (bone_matrices[b_id].linear() * normal);
+        }
+      }
+
+      const Common::Vec3 blended_normal(blended_norm.x(), blended_norm.y(), blended_norm.z());
+      WriteVec3(write_ptr, chunk_declaration.normals[0].offset, blended_normal.Normalized());
+    }
+  }
+}
+
+/**
+ * @brief Validates the SVD result to prevent mesh "explosions."
+ *
+ * Returns false if the matrix contains NaNs (from zero-weight bones) or if the
+ * determinant isn't ~1.0 (indicating a non-orthogonal transform or failed convergence).
+ */
+static bool IsValidTransform(const Eigen::Affine3f& transform)
+{
+  if (transform.matrix().array().isNaN().any())
+    return false;
+
+  const float det = transform.linear().determinant();
+  if (std::abs(det - 1.0f) > 0.01f)
+    return false;
+
+  return true;
+}
+
+namespace GraphicsModSystem::CPUSkinning
+{
+void UpdateSkeleton(GraphicsModSystem::DrawCallID draw_call,
+                    const VideoCommon::SkinningRig& replacement_rig,
+                    const std::vector<Eigen::Vector3f>& original_positions,
+                    const GraphicsModSystem::DrawDataView& native_draw_data,
+                    VideoCommon::SkeletonInstance* skeleton)
+{
+  auto it = replacement_rig.draw_call_rig_details.find(draw_call);
+  if (it == replacement_rig.draw_call_rig_details.end())
+    return;
+
+  if (!skeleton) [[unlikely]]
+    return;
+
+  // 1. Partial Solve: Can we solve for any bones using ONLY this chunk?
+  std::vector<Eigen::Affine3f> local_bone_solutions;
+  std::vector<float> local_bone_weights;
+
+  // Initialize with Identity to avoid garbage data for unsolved bones
+  local_bone_solutions.assign(replacement_rig.bone_rest_centers.size(),
+                              Eigen::Affine3f::Identity());
+  local_bone_weights.assign(replacement_rig.bone_rest_centers.size(), 0.0f);
+
+  const bool gpu_skinned_draw =
+      native_draw_data.vertex_format->GetVertexDeclaration().position.enable;
+  if (gpu_skinned_draw)
+  {
+    GetGPUSkinnedTransforms(draw_call, replacement_rig, original_positions, native_draw_data,
+                            local_bone_solutions, local_bone_weights);
+  }
+  else
+  {
+    SolveChunkBoneTransforms(draw_call, replacement_rig, original_positions, native_draw_data,
+                             local_bone_solutions, local_bone_weights);
+  }
+
+  // 2. Update Global State:
+  for (std::size_t bone_id = 0; bone_id < local_bone_solutions.size(); ++bone_id)
+  {
+    // Shouldn't happen...need to figure out why
+    if (bone_id >= skeleton->solved_this_frame.size())
+      continue;
+
+    if (skeleton->solved_this_frame[bone_id])
+      continue;
+
+    // ONLY update if this chunk is a "Better" representative for this bone
+    if (local_bone_weights[bone_id] > skeleton->best_confidence[bone_id])
+    {
+      // GPU skinned draws are always valid
+      if (IsValidTransform(local_bone_solutions[bone_id]) || gpu_skinned_draw)
+      {
+        // WARN_LOG_FMT(VIDEO, "Global bone {}", bone_id);
+        skeleton->bone_matrices[bone_id] = local_bone_solutions[bone_id];
+        skeleton->best_confidence[bone_id] = local_bone_weights[bone_id];
+        skeleton->solved_this_frame[bone_id] = true;
+      }
+      else
+      {
+        // WARN_LOG_FMT(VIDEO, "Invalid transform bone {}", bone_id);
+      }
+    }
+  }
+}
+
+void ApplySkeleton(const VideoCommon::MeshResource::MeshChunk& replacement_chunk,
+                   const VideoCommon::SkinningRig& replacement_rig,
+                   const VideoCommon::SkeletonInstance& skeleton, std::vector<u8>* out)
+{
+  ApplyLinearBlendedSkinning(replacement_chunk, replacement_rig, skeleton.bone_matrices, out);
+}
+}  // namespace GraphicsModSystem::CPUSkinning
