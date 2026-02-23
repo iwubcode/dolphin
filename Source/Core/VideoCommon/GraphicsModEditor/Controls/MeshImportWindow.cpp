@@ -83,79 +83,26 @@ void ImportMeshData(std::string_view filename, u32 components_to_copy, bool pars
       return;
     }
 
-    GraphicsModEditor::VertexGroupPerDrawCall vertex_groups_for_draw_call;
+    std::optional<GraphicsModEditor::ExporterSkinningRig> exported_skinning_rig;
     if (parse_cpu_skinning)
     {
-      const std::string dolphin_vertex_groups_file = basepath + basename + ".vertexgroups";
-      picojson::value vertex_groups_json;
-      std::string error;
-      if (!JsonFromFile(dolphin_vertex_groups_file, &vertex_groups_json, &error))
+      const std::string dolphin_rig_filename = basepath + basename + ".rig";
+      File::IOFile rig_file(dolphin_rig_filename, "rb");
+      if (!rig_file.IsOpen())
       {
-        ERROR_LOG_FMT(VIDEO, "Vertex groups file '{}' could not be parsed!  Error: '{}'",
-                      dolphin_vertex_groups_file, error);
+        ERROR_LOG_FMT(VIDEO, "Rig file '{}' could not be opened!", dolphin_rig_filename);
         return;
       }
 
-      if (!vertex_groups_json.is<picojson::object>())
+      exported_skinning_rig.emplace();
+
+      std::vector<u8> rig_bytes;
+      rig_bytes.reserve(rig_file.GetSize());
+      rig_file.ReadBytes(rig_bytes.data(), rig_file.GetSize());
+      if (!GraphicsModEditor::ExporterSkinningRig::FromBinary(rig_bytes, &*exported_skinning_rig))
       {
-        ERROR_LOG_FMT(
-            VIDEO, "Failed to load vertex groups json file '{}' due to root not being an object!",
-            dolphin_vertex_groups_file);
+        ERROR_LOG_FMT(VIDEO, "Error processing rig file '{}'!", dolphin_rig_filename);
         return;
-      }
-
-      const auto vertex_groups_obj = vertex_groups_json.get<picojson::object>();
-      for (const auto& [draw_call_str, json_vertex_groups] : vertex_groups_obj)
-      {
-        if (!json_vertex_groups.is<picojson::object>())
-        {
-          ERROR_LOG_FMT(VIDEO,
-                        "Failed to load vertex groups json file '{}' due to draw call '{}' not "
-                        "containing an object!",
-                        dolphin_vertex_groups_file, draw_call_str);
-          return;
-        }
-
-        unsigned long long draw_call_id;
-        if (!TryParse(draw_call_str, &draw_call_id))
-        {
-          ERROR_LOG_FMT(VIDEO,
-                        "Failed to load vertex groups json file '{}' due to draw call '{}' not "
-                        "being an integer",
-                        dolphin_vertex_groups_file, draw_call_str);
-          return;
-        }
-        const auto draw_call = static_cast<GraphicsModSystem::DrawCallID>(draw_call_id);
-
-        auto& vertex_groups = vertex_groups_for_draw_call[draw_call];
-
-        for (const auto& [vertex_group_id, json_arr] : json_vertex_groups.get<picojson::object>())
-        {
-          if (!json_arr.is<picojson::array>())
-          {
-            // error
-            return;
-          }
-
-          VideoCommon::VertexGroup vertex_group;
-
-          const auto arr = json_arr.get<picojson::array>();
-          for (const auto arr_ele : arr)
-          {
-            if (!arr_ele.is<double>())
-            {
-              // error
-              return;
-            }
-
-            const auto indice = static_cast<int>(arr_ele.get<double>());
-            vertex_group.push_back(indice);
-          }
-
-          vertex_groups.push_back(std::move(vertex_group));
-        }
-
-        vertex_groups_for_draw_call.try_emplace(draw_call, std::move(vertex_groups));
       }
     }
 
@@ -163,8 +110,8 @@ void ImportMeshData(std::string_view filename, u32 components_to_copy, bool pars
     mesh_data.Report();
 
     GraphicsModEditor::CalculateMeshDataWithSkinning(native_mesh_data, reference_mesh_data,
-                                                     components_to_copy,
-                                                     vertex_groups_for_draw_call, &mesh_data);
+                                                     components_to_copy, exported_skinning_rig,
+                                                     &mesh_data);
     ERROR_LOG_FMT(VIDEO, "Mesh data after skinning");
     mesh_data.Report();
   }
