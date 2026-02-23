@@ -174,6 +174,8 @@ add_library(videocommon
   GraphicsModSystem/Runtime/Actions/TransformAction.h
   GraphicsModSystem/Runtime/CameraManager.cpp
   GraphicsModSystem/Runtime/CameraManager.h
+  GraphicsModSystem/Runtime/CPUSkinning.cpp
+  GraphicsModSystem/Runtime/CPUSkinning.h
   GraphicsModSystem/Runtime/FBInfo.cpp
   GraphicsModSystem/Runtime/FBInfo.h
   GraphicsModSystem/Runtime/GraphicsModAction.h
@@ -190,6 +192,8 @@ add_library(videocommon
   GraphicsModSystem/Runtime/GraphicsModRuntimeBackend.h
   GraphicsModSystem/Runtime/GraphicsModTags.cpp
   GraphicsModSystem/Runtime/GraphicsModTags.h
+  GraphicsModSystem/Runtime/SkeletonManager.cpp
+  GraphicsModSystem/Runtime/SkeletonManager.h
   HiresTextures.cpp
   HiresTextures.h
   IndexGenerator.cpp

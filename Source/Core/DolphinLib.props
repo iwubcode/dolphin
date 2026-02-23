@@ -761,6 +761,7 @@
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\Actions\SkipAction.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\Actions\TransformAction.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\CameraManager.h" />
+    <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\CPUSkinning.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\FBInfo.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\GraphicsModAction.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\GraphicsModActionData.h" />
@@ -771,6 +772,7 @@
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\GraphicsModManager.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\GraphicsModRuntimeBackend.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\GraphicsModTags.h" />
+	<ClInclude Include="VideoCommon\GraphicsModSystem\Runtime\SkeletonManager.h" />
     <ClInclude Include="VideoCommon\GraphicsModSystem\Types.h" />
     <ClInclude Include="VideoCommon\GXPipelineTypes.h" />
     <ClInclude Include="VideoCommon\HiresTextures.h" />
@@ -1472,6 +1474,7 @@
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\Actions\SkipAction.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\Actions\TransformAction.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\CameraManager.cpp" />
+    <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\CPUSkinning.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\FBInfo.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\GraphicsModActionFactory.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\GraphicsModBackend.cpp" />
@@ -1479,6 +1482,7 @@
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\GraphicsModManager.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\GraphicsModRuntimeBackend.cpp" />
     <ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\GraphicsModTags.cpp" />
+	<ClCompile Include="VideoCommon\GraphicsModSystem\Runtime\SkeletonManager.cpp" />
     <ClCompile Include="VideoCommon\HiresTextures.cpp" />
     <ClCompile Include="VideoCommon\IndexGenerator.cpp" />
     <ClCompile Include="VideoCommon\LightingShaderGen.cpp" />
