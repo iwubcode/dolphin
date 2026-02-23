@@ -10,9 +10,6 @@
 #include <utility>
 #include <variant>
 
-#include "imgui/../../eigen/eigen/Eigen/Dense"
-#include "imgui/../../eigen/eigen/Eigen/Geometry"
-
 #include <xxh3.h>
 #include <xxhash.h>
 
@@ -35,6 +32,7 @@
 #include "VideoCommon/DataReader.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/GeometryShaderManager.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/CPUSkinning.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/CameraManager.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModManager.h"
 #include "VideoCommon/GraphicsModSystem/Types.h"
@@ -120,53 +118,6 @@ static bool IsNormalProjection(const Projection::Raw& projection, const Viewport
 }
 
 static std::map<unsigned long long, std::vector<u8>> s_draw_call_to_memory;
-
-using CPUSkinningTransform = std::pair<Eigen::Matrix3f, Eigen::Vector3f>;
-static CPUSkinningTransform
-ComputeKabsch(const VideoCommon::CPUSkinningData::DataPerGroup& data_per_group,
-              const std::vector<Eigen::Vector3f>& group_points)
-{
-  const std::size_t N = group_points.size();
-  Eigen::MatrixXf new_pose_points(3, N);
-  for (int i = 0; i < N; ++i)
-    new_pose_points.col(i) = group_points[i];
-
-  const Eigen::Vector3f centroid_initial_pose(data_per_group.centroid.x, data_per_group.centroid.y,
-                                              data_per_group.centroid.z);
-
-  Eigen::MatrixXf centered_initial_pose_points(3, N);
-  for (int i = 0; i < N; ++i)
-  {
-    const auto& delta_centroid = data_per_group.delta_positions_from_centroid[i];
-    centered_initial_pose_points.col(i) =
-        Eigen::Vector3f(delta_centroid.x, delta_centroid.y, delta_centroid.z);
-  }
-
-  const Eigen::Vector3f new_pose_centroid = new_pose_points.rowwise().mean();
-  const Eigen::MatrixXf new_pose_centered_points = new_pose_points.colwise() - new_pose_centroid;
-
-  // Covariance matrix H
-  const Eigen::Matrix3f H = centered_initial_pose_points * new_pose_centered_points.transpose();
-
-  // SVD of H
-  const Eigen::JacobiSVD<Eigen::Matrix3f> svd(H, Eigen::ComputeFullU | Eigen::ComputeFullV);
-  Eigen::Matrix3f U = svd.matrixU();
-  Eigen::Matrix3f V = svd.matrixV();
-
-  // Optimal Rotation R = V * U^T
-  Eigen::Matrix3f R = V * U.transpose();
-
-  // Handle reflection case (ensure det(R) > 0)
-  if (R.determinant() < 0)
-  {
-    V.col(2) *= -1;
-    R = V * U.transpose();
-  }
-
-  const Eigen::Vector3f T = new_pose_centroid - R * centroid_initial_pose;
-
-  return {R, T};
-}
 
 VertexManagerBase::VertexManagerBase()
     : m_cpu_vertex_buffer(MAXVBUFFERSIZE), m_cpu_index_buffer(MAXIBUFFERSIZE)
@@ -1385,166 +1336,101 @@ void VertexManagerBase::DrawEmulatedMesh(const VideoCommon::MaterialResource::Da
 }
 
 void VertexManagerBase::DrawCustomMesh(GraphicsModSystem::DrawCallID draw_call,
+                                       std::string_view group_name,
                                        const VideoCommon::MeshResource::Data& mesh_data,
                                        const GraphicsModSystem::DrawDataView& draw_data,
                                        const Common::Matrix44& custom_transform,
                                        bool ignore_mesh_transform,
-                                       VideoCommon::CameraManager& camera_manager)
+                                       VideoCommon::CameraManager& camera_manager,
+                                       VideoCommon::SkeletonManager& skeleton_manager)
 {
   auto& system = Core::System::GetInstance();
   auto& vertex_shader_manager = system.GetVertexShaderManager();
 
-  const auto cpu_skinning_data = mesh_data.GetCPUSkinningData(draw_call);
+  VideoCommon::SkeletonInstance* cpu_skeleton = nullptr;
+  const auto process_mesh_chunk =
+      [&](const VideoCommon::MeshResource::MeshChunk& mesh_chunk, int mesh_chunk_index,
+          const std::optional<VideoCommon::SkinningRig>& cpu_skinning_rig) {
+        // TODO: draw with a generic material?
+        if (!mesh_chunk.GetMaterial()) [[unlikely]]
+          return;
 
-  const auto read_position = [](const u8* vert_ptr, u32 position_offset) {
-    Common::Vec3 vertex_position;
-    std::memcpy(&vertex_position.x, vert_ptr + position_offset, sizeof(float));
-    std::memcpy(&vertex_position.y, vert_ptr + sizeof(float) + position_offset, sizeof(float));
-    std::memcpy(&vertex_position.z, vert_ptr + sizeof(float) * 2 + position_offset, sizeof(float));
-    return vertex_position;
-  };
+        const auto material_data = mesh_chunk.GetMaterial()->GetData();
+        if (!material_data) [[unlikely]]
+          return;
 
-  const auto write_position = [](u8* vert_ptr, u32 position_offset,
-                                 const Common::Vec3& vertex_position) {
-    std::memcpy(vert_ptr + position_offset, &vertex_position.x, sizeof(float));
-    std::memcpy(vert_ptr + position_offset + sizeof(float), &vertex_position.y, sizeof(float));
-    std::memcpy(vert_ptr + position_offset + sizeof(float) * 2, &vertex_position.z, sizeof(float));
-  };
+        const auto pipeline = material_data->GetPipeline();
+        if (!pipeline->m_config.vertex_shader || !pipeline->m_config.pixel_shader) [[unlikely]]
+          return;
 
-  const auto process_mesh_chunk = [&](const VideoCommon::MeshResource::MeshChunk& mesh_chunk,
-                                      int mesh_chunk_index,
-                                      const std::vector<CPUSkinningTransform>& cpu_transforms,
-                                      const std::vector<int>& cpu_transform_indices) {
-    // TODO: draw with a generic material?
-    if (!mesh_chunk.GetMaterial()) [[unlikely]]
-      return;
+        const auto vertex_data = mesh_chunk.GetVertexData();
+        const auto index_data = mesh_chunk.GetIndexData();
+        if (vertex_data.empty() || index_data.empty()) [[unlikely]]
+          return;
 
-    const auto material_data = mesh_chunk.GetMaterial()->GetData();
-    if (!material_data) [[unlikely]]
-      return;
+        vertex_shader_manager.SetVertexFormat(
+            mesh_chunk.GetComponentsAvailable(),
+            mesh_chunk.GetNativeVertexFormat()->GetVertexDeclaration());
 
-    const auto pipeline = material_data->GetPipeline();
-    if (!pipeline->m_config.vertex_shader || !pipeline->m_config.pixel_shader) [[unlikely]]
-      return;
+        Common::Matrix44 computed_transform;
+        computed_transform =
+            Common::Matrix44::Translate(mesh_chunk.GetPivotPoint()) * custom_transform;
+        if (!ignore_mesh_transform)
+        {
+          computed_transform *= mesh_chunk.GetTransform();
+        }
+        memcpy(vertex_shader_manager.constants.custom_transform.data(),
+               computed_transform.data.data(), 4 * sizeof(float4));
 
-    const auto vertex_data = mesh_chunk.GetVertexData();
-    const auto index_data = mesh_chunk.GetIndexData();
-    if (vertex_data.empty() || index_data.empty()) [[unlikely]]
-      return;
+        u32 base_vertex, base_index;
 
-    vertex_shader_manager.SetVertexFormat(
-        mesh_chunk.GetComponentsAvailable(),
-        mesh_chunk.GetNativeVertexFormat()->GetVertexDeclaration());
+        if (!cpu_skinning_rig)
+        {
+          UploadUtilityVertices(vertex_data.data(), mesh_chunk.GetVertexStride(),
+                                static_cast<u32>(vertex_data.size()), index_data.data(),
+                                static_cast<u32>(index_data.size()), &base_vertex, &base_index);
+        }
+        else
+        {
+          XXH3_state_t id_hash;
+          XXH3_INITSTATE(&id_hash);
+          XXH3_64bits_reset_withSeed(&id_hash, static_cast<XXH64_hash_t>(1));
 
-    Common::Matrix44 computed_transform;
-    computed_transform = Common::Matrix44::Translate(mesh_chunk.GetPivotPoint()) * custom_transform;
-    if (!ignore_mesh_transform)
-    {
-      computed_transform *= mesh_chunk.GetTransform();
-    }
-    memcpy(vertex_shader_manager.constants.custom_transform.data(), computed_transform.data.data(),
-           4 * sizeof(float4));
+          XXH3_64bits_update(&id_hash, &draw_call, sizeof(GraphicsModSystem::DrawCallID));
+          XXH3_64bits_update(&id_hash, &mesh_chunk_index, sizeof(int));
+          const auto id = XXH3_64bits_digest(&id_hash);
+          const auto [it, inserted] = s_draw_call_to_memory.try_emplace(id, std::vector<u8>{});
 
-    u32 base_vertex, base_index;
+          const auto total_bytes = mesh_chunk.GetVertexCount() * mesh_chunk.GetVertexStride();
+          if (it->second.size() < total_bytes)
+            it->second.resize(total_bytes);
+          std::memcpy(it->second.data(), vertex_data.data(), total_bytes);
 
-    if (!cpu_skinning_data)
-    {
-      UploadUtilityVertices(vertex_data.data(), mesh_chunk.GetVertexStride(),
-                            static_cast<u32>(vertex_data.size()), index_data.data(),
-                            static_cast<u32>(index_data.size()), &base_vertex, &base_index);
-    }
-    else
-    {
-      const auto read_index = [](const u8* vert_ptr, u32 index_offset) {
-        u32 index;
-        std::memcpy(&index, vert_ptr + index_offset, sizeof(u32));
-        return index;
+          // Calculate our cpu_skeleton once per drawn mesh replacement
+          if (cpu_skinning_rig && !cpu_skeleton)
+          {
+            auto& instance = skeleton_manager.GetSkeletonForChunk(
+                draw_call, group_name, cpu_skinning_rig->bone_rest_centers.size());
+            cpu_skeleton = &instance;
+          }
+          GraphicsModSystem::ApplyCPUSkinning(draw_call, mesh_chunk, *cpu_skinning_rig,
+                                              mesh_data.GetSkinningOriginalPositions(draw_call),
+                                              draw_data, cpu_skeleton, &it->second);
+
+          UploadUtilityVertices(it->second.data(), mesh_chunk.GetVertexStride(),
+                                mesh_chunk.GetVertexCount(), index_data.data(),
+                                static_cast<u32>(index_data.size()), &base_vertex, &base_index);
+        }
+
+        DrawViewsWithMaterial(base_vertex, base_index, static_cast<u32>(index_data.size()),
+                              mesh_chunk.GetPrimitiveType(), draw_data, *material_data,
+                              camera_manager);
       };
-
-      XXH3_state_t id_hash;
-      XXH3_INITSTATE(&id_hash);
-      XXH3_64bits_reset_withSeed(&id_hash, static_cast<XXH64_hash_t>(1));
-
-      XXH3_64bits_update(&id_hash, &draw_call, sizeof(GraphicsModSystem::DrawCallID));
-      XXH3_64bits_update(&id_hash, &mesh_chunk_index, sizeof(int));
-      const auto id = XXH3_64bits_digest(&id_hash);
-      const auto [it, inserted] = s_draw_call_to_memory.try_emplace(id, std::vector<u8>{});
-
-      const auto total_bytes = mesh_chunk.GetVertexCount() * mesh_chunk.GetVertexStride();
-      if (it->second.size() < total_bytes)
-        it->second.resize(total_bytes);
-      std::memcpy(it->second.data(), vertex_data.data(), total_bytes);
-
-      const auto chunk_stride = mesh_chunk.GetVertexStride();
-      const auto& chunk_declaration = mesh_chunk.GetNativeVertexFormat()->GetVertexDeclaration();
-      for (std::size_t i = 0; i < mesh_chunk.GetVertexCount(); i++)
-      {
-        const u8* read_ptr = mesh_chunk.GetVertexData().data() + i * chunk_stride;
-        const auto replacement_position =
-            read_position(read_ptr, chunk_declaration.position.offset);
-        const auto native_index = read_index(read_ptr, chunk_declaration.posmtx.offset);
-
-        const auto transform_index = cpu_transform_indices[native_index];
-        if (transform_index == -1)
-          continue;
-
-        const auto [R, T] = cpu_transforms[transform_index];
-        const Eigen::Vector3f pos(replacement_position.x, replacement_position.y,
-                                  replacement_position.z);
-        const Eigen::Vector3f pos_transformed = R * pos + T;
-        const Common::Vec3 replacement_position_transformed(
-            pos_transformed.x(), pos_transformed.y(), pos_transformed.z());
-
-        u8* write_ptr = it->second.data() + i * chunk_stride;
-        write_position(write_ptr, chunk_declaration.position.offset,
-                       replacement_position_transformed);
-      }
-
-      UploadUtilityVertices(it->second.data(), mesh_chunk.GetVertexStride(),
-                            mesh_chunk.GetVertexCount(), index_data.data(),
-                            static_cast<u32>(index_data.size()), &base_vertex, &base_index);
-    }
-
-    DrawViewsWithMaterial(base_vertex, base_index, static_cast<u32>(index_data.size()),
-                          mesh_chunk.GetPrimitiveType(), draw_data, *material_data, camera_manager);
-  };
-
-  std::vector<int> cpu_transform_indices;
-  std::vector<CPUSkinningTransform> cpu_transforms;
-  if (cpu_skinning_data)
-  {
-    cpu_transform_indices.resize(draw_data.vertex_count, -1);
-
-    const auto native_stride = draw_data.vertex_format->GetVertexStride();
-    const auto& native_declaration = draw_data.vertex_format->GetVertexDeclaration();
-
-    for (std::size_t i = 0; i < cpu_skinning_data->native_mesh_vertex_groups.size(); i++)
-    {
-      const auto& group = cpu_skinning_data->native_mesh_vertex_groups[i];
-      std::vector<Eigen::Vector3f> native_points;
-
-      for (const int indice : group)
-      {
-        const u8* native_ptr = draw_data.vertex_data + indice * native_stride;
-        const auto native_position = read_position(native_ptr, native_declaration.position.offset);
-        native_points.emplace_back(native_position.x, native_position.y, native_position.z);
-      }
-
-      // Get points from new mesh
-      const int transform_index = static_cast<int>(cpu_transforms.size());
-      cpu_transforms.push_back(
-          ComputeKabsch(cpu_skinning_data->native_mesh_group_data[i], native_points));
-      for (const int indice : group)
-      {
-        cpu_transform_indices[indice] = transform_index;
-      }
-    }
-  }
 
   const auto mesh_chunks = mesh_data.GetMeshChunks(draw_call);
   for (std::size_t i = 0; i < mesh_chunks.size(); i++)
   {
-    process_mesh_chunk(mesh_chunks[i], static_cast<int>(i), cpu_transforms, cpu_transform_indices);
+    process_mesh_chunk(mesh_chunks[i], static_cast<int>(i), mesh_data.GetCPUSkinningRig());
   }
 }
 

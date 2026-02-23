@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include "Common/BitSet.h"
@@ -38,6 +39,7 @@ struct DrawDataView;
 namespace VideoCommon
 {
 class CameraManager;
+class SkeletonManager;
 }  // namespace VideoCommon
 
 struct Slope
@@ -201,11 +203,12 @@ public:
                         VideoCommon::CameraManager& camera_manager);
 
   // Draw a custom mesh sourced from a mod, with a custom shader and custom vertex information
-  void DrawCustomMesh(GraphicsModSystem::DrawCallID draw_call,
+  void DrawCustomMesh(GraphicsModSystem::DrawCallID draw_call, std::string_view group_name,
                       const VideoCommon::MeshResource::Data& mesh_data,
                       const GraphicsModSystem::DrawDataView& draw_data,
                       const Common::Matrix44& custom_transform, bool ignore_mesh_transform,
-                      VideoCommon::CameraManager& camera_manager);
+                      VideoCommon::CameraManager& camera_manager,
+                      VideoCommon::SkeletonManager& skeleton_manager);
 
 protected:
   // Draws the current mesh data with a material, taking into account any
