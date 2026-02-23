@@ -161,15 +161,39 @@ MeshResource::Data::GetMeshChunks(GraphicsModSystem::DrawCallID draw_call) const
   return m_mesh_chunks;
 }
 
-const CPUSkinningData*
-MeshResource::Data::GetCPUSkinningData(GraphicsModSystem::DrawCallID draw_call) const
+std::vector<const MeshResource::MeshChunk*> MeshResource::Data::GetMeshChunks() const
 {
-  if (const auto iter = m_cpu_skinning_data.find(draw_call); iter != m_cpu_skinning_data.end())
+  std::vector<const MeshResource::MeshChunk*> result;
+  for (const auto& [id, chunks] : m_skinned_mesh_chunks)
   {
-    return &iter->second;
+    for (const auto& chunk : chunks)
+    {
+      result.push_back(&chunk);
+    }
   }
 
-  return nullptr;
+  if (!result.empty())
+    return result;
+
+  return {};
+}
+
+const std::optional<SkinningRig>& MeshResource::Data::GetSkinningRig() const
+{
+  return m_skinning_rig;
+}
+
+const std::vector<Eigen::Vector3f>&
+MeshResource::Data::GetSkinningOriginalPositions(GraphicsModSystem::DrawCallID draw_call) const
+{
+  if (const auto iter = m_mesh_data->m_original_positions.find(draw_call);
+      iter != m_mesh_data->m_original_positions.end())
+  {
+    return iter->second;
+  }
+
+  static std::vector<Eigen::Vector3f> result;
+  return result;
 }
 
 void MeshResource::Data::GenerateChunks(const GXPipelineUid& uid)
@@ -186,10 +210,7 @@ void MeshResource::Data::GenerateChunks(const GXPipelineUid& uid)
     }
   }
 
-  for (const auto& [draw_call_id, skinning_data] : m_mesh_data->m_cpu_skinning_data)
-  {
-    m_cpu_skinning_data[draw_call_id] = skinning_data;
-  }
+  m_skinning_rig = m_mesh_data->m_skinning_rig;
 
   for (const auto& chunk : m_mesh_data->m_mesh_chunks)
   {
