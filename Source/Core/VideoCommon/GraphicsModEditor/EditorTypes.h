@@ -69,12 +69,14 @@ struct LightData
 struct DrawCallUserData
 {
   std::string m_friendly_name;
+  std::string m_group;
   Common::Flags<GraphicsModSystem::DrawCallTag> tag_flags;
 };
 
 struct TextureCacheUserData
 {
   std::string m_friendly_name;
+  std::string m_group;
   Common::Flags<GraphicsModSystem::TextureTag> tag_flags;
 };
 
@@ -123,8 +125,20 @@ struct EditorAsset
   bool m_valid = false;
 };
 
+struct TextureCacheWrapper
+{
+  auto operator<=>(const TextureCacheWrapper&) const = default;
+  GraphicsModSystem::TextureCacheID id;
+};
+
+struct GroupWrapper
+{
+  auto operator<=>(const GroupWrapper&) const = default;
+  std::string id;
+};
+
 using SelectableType =
-    std::variant<GraphicsModSystem::DrawCallID, GraphicsModSystem::TextureCacheID,
+    std::variant<GraphicsModSystem::DrawCallID, TextureCacheWrapper, GroupWrapper,
                  GraphicsModSystem::LightID, GraphicsModAction*, EditorAsset*>;
 
 class EditorAction final : public GraphicsModAction
