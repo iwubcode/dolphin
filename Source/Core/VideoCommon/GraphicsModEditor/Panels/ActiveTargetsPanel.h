@@ -29,6 +29,7 @@ private:
   void DrawCallPanel(const std::vector<GraphicsModEditor::RuntimeState::XFBData*>& xfbs);
   void TexturesPanel(const std::vector<GraphicsModEditor::RuntimeState::XFBData*>& xfbs);
   void LightPanel(const std::vector<GraphicsModEditor::RuntimeState::XFBData*>& xfbs);
+  void GroupPanel(const std::vector<GraphicsModEditor::RuntimeState::XFBData*>& xfbs);
 
   void HandleSelectionEvent(SelectableType selectable);
   Common::EventHook m_selection_event;
@@ -39,6 +40,10 @@ private:
   std::set<GraphicsModSystem::DrawCallID> m_open_draw_call_nodes;
   std::set<GraphicsModSystem::TextureCacheID, std::less<>> m_open_texture_call_nodes;
   std::set<GraphicsModSystem::LightID> m_open_light_nodes;
+
+  // Group details
+  std::set<std::string, std::less<>> m_open_group_nodes;
+  std::string m_selected_group_name;
 
   // Selected nodes
   std::set<SelectableType> m_selected_nodes;

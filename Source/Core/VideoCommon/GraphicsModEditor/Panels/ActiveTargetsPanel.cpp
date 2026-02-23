@@ -122,6 +122,11 @@ void ActiveTargetsPanel::DrawImGui()
       LightPanel(xfbs);
       ImGui::EndTabItem();
     }*/
+    if (ImGui::BeginTabItem("Groups"))
+    {
+      GroupPanel(xfbs);
+      ImGui::EndTabItem();
+    }
     ImGui::EndTabBar();
   }
   ImGui::EndChild();
@@ -216,7 +221,7 @@ void ActiveTargetsPanel::DrawImGui()
       };
 
       rb_skinning("Any##anyskinning", DrawCallFilterContext::SkinningFilter::Any);
-      rb_skinning("CPU", DrawCallFilterContext::SkinningFilter::CPU);
+      rb_skinning("CPU (or unskinned)", DrawCallFilterContext::SkinningFilter::CPU);
       rb_skinning("GPU", DrawCallFilterContext::SkinningFilter::GPU);
       ImGui::EndGroup();
 
@@ -505,6 +510,18 @@ void ActiveTargetsPanel::DrawCallPanel(
             }
             ImGui::EndMenu();
           }
+          if (ImGui::BeginMenu("Other"))
+          {
+            if (ImGui::MenuItem("Add to Vertex Group Data"))
+            {
+              m_last_vertex_group_dump_request.m_draw_call_ids.insert(draw_call_id);
+            }
+            if (ImGui::MenuItem("Clear Vertex Group Data"))
+            {
+              m_last_vertex_group_dump_request.m_draw_call_ids.clear();
+            }
+            ImGui::EndMenu();
+          }
           if (ImGui::BeginMenu("Create"))
           {
             if (ImGui::MenuItem("Material"))
@@ -556,7 +573,7 @@ void ActiveTargetsPanel::TexturesPanel(
         if (!ImGui::GetIO().KeyCtrl)
           m_selected_nodes.clear();
 
-        const auto [it, inserted] = m_selected_nodes.insert(texture_cache_id);
+        const auto [it, inserted] = m_selected_nodes.insert(TextureCacheWrapper{texture_cache_id});
         if (inserted)
         {
           m_selection_list_changed = true;
@@ -564,6 +581,248 @@ void ActiveTargetsPanel::TexturesPanel(
       }
       ImGui::Text("%s", texture_cache_id.c_str());
       ImGui::EndGroup();
+    }
+  }
+}
+
+void ActiveTargetsPanel::GroupPanel(
+    const std::vector<GraphicsModEditor::RuntimeState::XFBData*>& xfbs)
+{
+  static constexpr ImGuiTreeNodeFlags base_flags = ImGuiTreeNodeFlags_OpenOnArrow |
+                                                   ImGuiTreeNodeFlags_OpenOnDoubleClick |
+                                                   ImGuiTreeNodeFlags_SpanAvailWidth;
+
+  std::unordered_set<GraphicsModSystem::DrawCallID> draw_calls_for_selected;
+  std::unordered_set<std::string_view> groups_seen;
+
+  bool potential_popup = false;
+  bool ignore_target_context_menu = false;
+
+  for (const auto xfb_data : xfbs)
+  {
+    for (const auto& draw_call_id_with_time : xfb_data->m_draw_call_ids)
+    {
+      const auto draw_call_id = draw_call_id_with_time.draw_call_id;
+      const auto user_iter = m_state.m_user_data.m_draw_call_id_to_user_data.find(draw_call_id);
+      if (user_iter == m_state.m_user_data.m_draw_call_id_to_user_data.end())
+        continue;
+
+      const auto& group = user_iter->second.m_group;
+      if (group.empty())
+        continue;
+      if (group == m_selected_group_name)
+      {
+        draw_calls_for_selected.insert(draw_call_id);
+      }
+      if (groups_seen.contains(group))
+        continue;
+      groups_seen.insert(group);
+
+      GroupWrapper group_wrapper{group};
+
+      const auto target_actions_iter = m_state.m_user_data.m_named_group_to_actions.find(group);
+
+      ImGuiTreeNodeFlags node_flags;
+
+      if (target_actions_iter == m_state.m_user_data.m_named_group_to_actions.end())
+        node_flags = ImGuiTreeNodeFlags_Leaf;
+      else
+        node_flags = base_flags;
+
+      if (m_selected_nodes.contains(group_wrapper))
+        node_flags |= ImGuiTreeNodeFlags_Selected;
+
+      ImGui::Image(*m_state.m_editor_data.m_name_to_texture["filled_cube"].get(), ImVec2{25, 25});
+      ImGui::SameLine();
+
+      ImGui::SetNextItemOpen(m_open_group_nodes.contains(group));
+      const bool node_open = ImGui::TreeNodeEx(group.c_str(), node_flags, "%s", group.data());
+
+      HandleSelectionEvent(group_wrapper);
+
+      // Normally we would use 'BeginPopupContextItem' but unfortunately we can't logically do this
+      // after handling the node state because it gets the _last_ item clicked
+      potential_popup = ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right);
+      if (potential_popup)
+      {
+        m_selected_group_name = group;
+      }
+      if (!node_open)
+      {
+        m_open_group_nodes.erase(group);
+      }
+      else
+      {
+        m_open_group_nodes.insert(group);
+        if (target_actions_iter != m_state.m_user_data.m_named_group_to_actions.end())
+        {
+          std::vector<GraphicsModAction*> actions_to_delete;
+          for (const auto& action : target_actions_iter->second)
+          {
+            node_flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                         ImGuiTreeNodeFlags_SpanAvailWidth;
+
+            if (m_selected_nodes.contains(action))
+              node_flags |= ImGuiTreeNodeFlags_Selected;
+            const std::string action_name =
+                fmt::format("{}-{}", action->GetFactoryName(), action->GetID());
+            ImGui::TreeNodeEx(action_name.c_str(), node_flags, "%s", action_name.c_str());
+            HandleSelectionEvent(action);
+
+            if (ImGui::BeginPopupContextItem())
+            {
+              ignore_target_context_menu = true;
+              if (ImGui::Selectable("Delete"))
+              {
+                actions_to_delete.push_back(action);
+              }
+              ImGui::EndPopup();
+            }
+          }
+
+          for (const auto& action_to_delete : actions_to_delete)
+          {
+            // Removal from reference memory container
+            std::erase_if(target_actions_iter->second, [action_to_delete](auto& action_own) {
+              return action_own == action_to_delete;
+            });
+            if (target_actions_iter->second.empty())
+            {
+              m_state.m_user_data.m_named_group_to_actions.erase(target_actions_iter);
+            }
+
+            // Removal from owning memory container
+            std::erase_if(m_state.m_user_data.m_actions, [action_to_delete](auto&& action) {
+              return action.get() == action_to_delete;
+            });
+
+            if (m_selected_nodes.erase(action_to_delete) > 0)
+            {
+              m_selection_list_changed = true;
+            }
+          }
+        }
+        ImGui::TreePop();
+      }
+    }
+  }
+
+  if (!ignore_target_context_menu)
+  {
+    if (potential_popup)
+    {
+      if (!ImGui::IsPopupOpen(m_selected_group_name.data()))
+      {
+        ImGui::OpenPopup(m_selected_group_name.data());
+      }
+    }
+    if (ImGui::BeginPopup(m_selected_group_name.data()))
+    {
+      if (ImGui::BeginMenu("Add Action"))
+      {
+        if (ImGui::MenuItem("Transform"))
+        {
+          auto action = std::make_unique<EditorAction>(std::make_unique<TransformAction>());
+          action->SetID(m_state.m_editor_data.m_next_action_id);
+          // TODO: somehow we need to tell transform's about our group
+          // action->SetDrawCall(draw_call_id);
+
+          auto& action_refs = m_state.m_user_data.m_named_group_to_actions[m_selected_group_name];
+          action_refs.push_back(action.get());
+
+          m_state.m_user_data.m_actions.push_back(std::move(action));
+          m_open_group_nodes.insert(m_selected_group_name);
+          m_state.m_editor_data.m_next_action_id++;
+        }
+
+        if (ImGui::MenuItem("Skip Draw"))
+        {
+          auto action = std::make_unique<EditorAction>(std::make_unique<SkipAction>());
+          action->SetID(m_state.m_editor_data.m_next_action_id);
+          // action->SetAllDrawCall(draw_call_id);
+
+          auto& action_refs = m_state.m_user_data.m_named_group_to_actions[m_selected_group_name];
+          action_refs.push_back(action.get());
+
+          m_state.m_user_data.m_actions.push_back(std::move(action));
+          m_open_group_nodes.insert(m_selected_group_name);
+          m_state.m_editor_data.m_next_action_id++;
+        }
+
+        if (ImGui::MenuItem("Custom Mesh"))
+        {
+          auto action = std::make_unique<EditorAction>(
+              std::make_unique<CustomMeshAction>(m_state.m_user_data.m_asset_library));
+          action->SetID(m_state.m_editor_data.m_next_action_id);
+          // action->SetAllDrawCall(draw_call_id);
+
+          auto& action_refs = m_state.m_user_data.m_named_group_to_actions[m_selected_group_name];
+          action_refs.push_back(action.get());
+
+          m_state.m_user_data.m_actions.push_back(std::move(action));
+          m_open_group_nodes.insert(m_selected_group_name);
+          m_state.m_editor_data.m_next_action_id++;
+        }
+
+        if (ImGui::MenuItem("Custom Pipeline"))
+        {
+          auto action = std::make_unique<EditorAction>(
+              CustomPipelineAction::Create(m_state.m_user_data.m_asset_library));
+          action->SetID(m_state.m_editor_data.m_next_action_id);
+          // action->SetAllDrawCall(draw_call_id);
+
+          auto& action_refs = m_state.m_user_data.m_named_group_to_actions[m_selected_group_name];
+          action_refs.push_back(action.get());
+
+          m_state.m_user_data.m_actions.push_back(std::move(action));
+          m_open_group_nodes.insert(m_selected_group_name);
+          m_state.m_editor_data.m_next_action_id++;
+        }
+
+        if (ImGui::MenuItem("Camera"))
+        {
+          auto action = std::make_unique<EditorAction>(
+              std::make_unique<RelativeCameraAction>(m_state.m_user_data.m_asset_library));
+          action->SetID(m_state.m_editor_data.m_next_action_id);
+          // action->SetAllDrawCall(draw_call_id);
+
+          auto& action_refs = m_state.m_user_data.m_named_group_to_actions[m_selected_group_name];
+          action_refs.push_back(action.get());
+
+          m_state.m_user_data.m_actions.push_back(std::move(action));
+          m_open_group_nodes.insert(m_selected_group_name);
+          m_state.m_editor_data.m_next_action_id++;
+        }
+        ImGui::EndMenu();
+      }
+
+      if (ImGui::BeginMenu("Export"))
+      {
+        if (ImGui::MenuItem("Mesh..."))
+        {
+          if (!m_open_mesh_dump_export_window)
+          {
+            for (const auto draw_call_id : draw_calls_for_selected)
+            {
+              m_last_mesh_dump_request.m_draw_call_ids.insert(draw_call_id);
+            }
+          }
+          m_open_mesh_dump_export_window = true;
+        }
+        if (ImGui::MenuItem("Vertex Group Data..."))
+        {
+          if (!m_open_vertex_group_dump_window)
+          {
+            for (const auto draw_call_id : draw_calls_for_selected)
+            {
+              m_last_vertex_group_dump_request.m_draw_call_ids.insert(draw_call_id);
+            }
+          }
+          m_open_vertex_group_dump_window = true;
+        }
+        ImGui::EndMenu();
+      }
+      ImGui::EndPopup();
     }
   }
 }
