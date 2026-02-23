@@ -5,10 +5,12 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 
+#include <Eigen/Core>
 #include <picojson.h>
 
 #include "Common/CommonTypes.h"
@@ -26,19 +28,32 @@ class IOFile;
 
 namespace VideoCommon
 {
-using VertexGroup = std::vector<int>;
-struct CPUSkinningData
+struct LocalBoneGroup
 {
-  std::vector<VertexGroup> native_mesh_vertex_groups;
-
-  struct DataPerGroup
-  {
-    Common::Vec3 centroid;
-    std::vector<Common::Vec3> delta_positions_from_centroid;
-  };
-  std::vector<DataPerGroup> native_mesh_group_data;
+  int bone_id;
+  std::vector<int> welded_indices;
+  std::vector<int> original_indices;
+  std::vector<float> weights;  // Confidence for SVD
 };
-using CPUSkinningDataPerDrawCall = std::map<GraphicsModSystem::DrawCallID, CPUSkinningData>;
+
+struct ChunkRigData
+{
+  GraphicsModSystem::DrawCallID draw_call_id;
+  std::map<int, LocalBoneGroup> bone_groups;  // BoneID -> Group
+};
+
+class SkinningRig
+{
+public:
+  std::vector<Eigen::Vector3f> welded_positions;
+  float welded_rig_scale;
+  Eigen::Vector3f welded_rig_centroid;
+  std::vector<Eigen::Vector3f> bone_rest_centers;
+  std::map<GraphicsModSystem::DrawCallID, ChunkRigData> draw_call_rig_details;
+
+  static bool FromBinary(const u8* raw_data, std::size_t* offset, SkinningRig* data);
+  static bool ToBinary(File::IOFile* file_data, const SkinningRig& data);
+};
 
 struct MeshDataChunk
 {
@@ -75,7 +90,9 @@ struct MeshData
       m_mesh_material_to_material_asset_id;
 
   std::map<GraphicsModSystem::DrawCallID, std::vector<MeshDataChunk>> m_skinning_chunks;
-  CPUSkinningDataPerDrawCall m_cpu_skinning_data;
+  std::optional<SkinningRig> m_cpu_skinning_rig;
+
+  std::map<GraphicsModSystem::DrawCallID, std::vector<Eigen::Vector3f>> m_original_positions;
 };
 
 class MeshAsset final : public CustomLoadableAsset<MeshData>

@@ -493,6 +493,146 @@ bool ReadGLTF(std::string_view mesh_file, const tinygltf::Model& model, MeshData
   return ReadGLTFMaterials(mesh_file, model, data);
 }
 }  // namespace
+
+bool SkinningRig::FromBinary(const u8* raw_data, std::size_t* offset, SkinningRig* data)
+{
+  if (!raw_data || !data) [[unlikely]]
+    return false;
+
+  // 1. Welded Positions
+  u32 num_welded = 0;
+  std::memcpy(&num_welded, raw_data + *offset, sizeof(u32));
+  *offset += sizeof(u32);
+
+  data->welded_positions.resize(num_welded);
+  // Since Eigen::Vector3f is 3 floats, we can copy the block directly if it's packed
+  // or loop for safety if you prefer explicit float conversion
+  for (u32 i = 0; i < num_welded; ++i)
+  {
+    float p[3];
+    std::memcpy(p, raw_data + *offset, sizeof(float) * 3);
+    data->welded_positions[i] = Eigen::Vector3f(p[0], p[1], p[2]);
+    *offset += sizeof(float) * 3;
+  }
+
+  // 2. Bone Rest Centers
+  u32 num_bones = 0;
+  std::memcpy(&num_bones, raw_data + *offset, sizeof(u32));
+  *offset += sizeof(u32);
+
+  data->bone_rest_centers.resize(num_bones);
+  for (u32 i = 0; i < num_bones; ++i)
+  {
+    float c[3];
+    std::memcpy(c, raw_data + *offset, sizeof(float) * 3);
+    data->bone_rest_centers[i] = Eigen::Vector3f(c[0], c[1], c[2]);
+    *offset += sizeof(float) * 3;
+  }
+
+  // 3. Chunk Solve Data (SVD Groups)
+  u32 num_chunks = 0;
+  std::memcpy(&num_chunks, raw_data + *offset, sizeof(u32));
+  *offset += sizeof(u32);
+
+  for (u32 i = 0; i < num_chunks; ++i)
+  {
+    u64 id = 0;
+    std::memcpy(&id, raw_data + *offset, sizeof(u64));
+    *offset += sizeof(u64);
+    const GraphicsModSystem::DrawCallID draw_call = static_cast<GraphicsModSystem::DrawCallID>(id);
+
+    ChunkRigData& chunk = data->draw_call_rig_details[draw_call];
+    chunk.draw_call_id = draw_call;
+
+    u32 active_bones = 0;
+    std::memcpy(&active_bones, raw_data + *offset, sizeof(u32));
+    *offset += sizeof(u32);
+
+    for (u32 j = 0; j < active_bones; ++j)
+    {
+      int b_id = 0;
+      std::memcpy(&b_id, raw_data + *offset, sizeof(int));
+      *offset += sizeof(int);
+
+      u32 count = 0;
+      std::memcpy(&count, raw_data + *offset, sizeof(u32));
+      *offset += sizeof(u32);
+
+      LocalBoneGroup& group = chunk.bone_groups[b_id];
+      group.bone_id = b_id;
+
+      group.original_indices.resize(count);
+      std::memcpy(group.original_indices.data(), raw_data + *offset, count * sizeof(int));
+      *offset += count * sizeof(int);
+
+      group.welded_indices.resize(count);
+      std::memcpy(group.welded_indices.data(), raw_data + *offset, count * sizeof(int));
+      *offset += count * sizeof(int);
+
+      group.weights.resize(count);
+      std::memcpy(group.weights.data(), raw_data + *offset, count * sizeof(float));
+      *offset += count * sizeof(float);
+    }
+  }
+
+  std::memcpy(data->welded_rig_centroid.data(), raw_data + *offset, 3 * sizeof(float));
+  *offset += 3 * sizeof(float);
+
+  std::memcpy(&data->welded_rig_scale, raw_data + *offset, sizeof(float));
+  *offset += sizeof(float);
+
+  return true;
+}
+
+bool SkinningRig::ToBinary(File::IOFile* file_data, const SkinningRig& data)
+{
+  const u32 num_welded = static_cast<u32>(data.welded_positions.size());
+  const u32 num_bones = static_cast<u32>(data.bone_rest_centers.size());
+  const u32 num_draw_calls = static_cast<u32>(data.draw_call_rig_details.size());
+
+  file_data->WriteBytes(&num_welded, sizeof(u32));
+  for (const auto& v : data.welded_positions)
+  {
+    float p[3] = {v.x(), v.y(), v.z()};
+    file_data->WriteBytes(p, sizeof(float) * 3);
+  }
+
+  file_data->WriteBytes(&num_bones, sizeof(u32));
+  for (const auto& c : data.bone_rest_centers)
+  {
+    float p[3] = {c.x(), c.y(), c.z()};
+    file_data->WriteBytes(p, sizeof(float) * 3);
+  }
+
+  file_data->WriteBytes(&num_draw_calls, sizeof(u32));
+  for (auto const& [draw_call, chunk] : data.draw_call_rig_details)
+  {
+    u64 id = static_cast<u64>(draw_call);
+    file_data->WriteBytes(&id, sizeof(u64));
+
+    u32 active_bones = static_cast<u32>(chunk.bone_groups.size());
+    file_data->WriteBytes(&active_bones, sizeof(u32));
+
+    for (auto const& [b_id, group] : chunk.bone_groups)
+    {
+      file_data->WriteBytes(&b_id, sizeof(int));
+      u32 count = static_cast<u32>(group.original_indices.size());
+      file_data->WriteBytes(&count, sizeof(u32));
+
+      // Save the "Moving" indices
+      file_data->WriteBytes(group.original_indices.data(), count * sizeof(int));
+      // Save the "Rest" indices
+      file_data->WriteBytes(group.welded_indices.data(), count * sizeof(int));
+      // Save the weights
+      file_data->WriteBytes(group.weights.data(), count * sizeof(float));
+    }
+  }
+
+  file_data->WriteBytes(data.welded_rig_centroid.data(), 3 * sizeof(float));
+  file_data->WriteBytes(&data.welded_rig_scale, sizeof(float));
+  return true;
+}
+
 bool MeshData::FromJson(const VideoCommon::CustomAssetLibrary::AssetID& asset_id,
                         const picojson::object& json, MeshData* data)
 {
@@ -625,68 +765,36 @@ bool MeshData::FromDolphinMesh(std::span<const u8> raw_data, MeshData* data)
     data->m_skinning_chunks.try_emplace(draw_call_id, std::move(skinning_chunks));
   }
 
-  std::size_t cpu_skinning_map_size = 0;
-  std::memcpy(&cpu_skinning_map_size, raw_data.data() + offset, sizeof(std::size_t));
+  bool has_cpu_skinning = false;
+  std::memcpy(&has_cpu_skinning, raw_data.data() + offset, sizeof(bool));
+  offset += sizeof(bool);
+  if (has_cpu_skinning)
+  {
+    SkinningRig rig_result;
+    if (!SkinningRig::FromBinary(raw_data.data(), &offset, &rig_result))
+      return false;
+    data->m_cpu_skinning_rig = std::move(rig_result);
+  }
+
+  std::size_t original_positions_map_size = 0;
+  std::memcpy(&original_positions_map_size, raw_data.data() + offset, sizeof(std::size_t));
   offset += sizeof(std::size_t);
-  for (std::size_t i = 0; i < cpu_skinning_map_size; i++)
+  for (std::size_t i = 0; i < original_positions_map_size; i++)
   {
     GraphicsModSystem::DrawCallID draw_call_id;
     std::memcpy(&draw_call_id, raw_data.data() + offset, sizeof(GraphicsModSystem::DrawCallID));
     offset += sizeof(GraphicsModSystem::DrawCallID);
 
-    CPUSkinningData cpu_skinning_data;
-
-    std::size_t vertex_group_data_size = 0;
-    std::memcpy(&vertex_group_data_size, raw_data.data() + offset, sizeof(std::size_t));
+    std::size_t positions_size = 0;
+    std::memcpy(&positions_size, raw_data.data() + offset, sizeof(std::size_t));
     offset += sizeof(std::size_t);
 
-    for (std::size_t vertex_group_data_index = 0; vertex_group_data_index < vertex_group_data_size;
-         vertex_group_data_index++)
-    {
-      CPUSkinningData::DataPerGroup group_data;
-      std::memcpy(&group_data.centroid, raw_data.data() + offset, sizeof(Common::Vec3));
-      offset += sizeof(Common::Vec3);
-
-      std::size_t centroid_deltas_size = 0;
-      std::memcpy(&centroid_deltas_size, raw_data.data() + offset, sizeof(std::size_t));
-      offset += sizeof(std::size_t);
-
-      for (std::size_t centroid_delta_index = 0; centroid_delta_index < centroid_deltas_size;
-           centroid_delta_index++)
-      {
-        Common::Vec3 centroid_delta;
-        std::memcpy(&centroid_delta, raw_data.data() + offset, sizeof(Common::Vec3));
-        offset += sizeof(Common::Vec3);
-        group_data.delta_positions_from_centroid.push_back(centroid_delta);
-      }
-      cpu_skinning_data.native_mesh_group_data.push_back(std::move(group_data));
-    }
-
-    std::size_t vertex_groups_size = 0;
-    std::memcpy(&vertex_groups_size, raw_data.data() + offset, sizeof(std::size_t));
-    offset += sizeof(std::size_t);
-
-    for (std::size_t vertex_groups_index = 0; vertex_groups_index < vertex_groups_size;
-         vertex_groups_index++)
-    {
-      std::size_t vertex_group_size = 0;
-      std::memcpy(&vertex_group_size, raw_data.data() + offset, sizeof(std::size_t));
-      offset += sizeof(std::size_t);
-
-      VertexGroup vertex_group_indices(vertex_group_size);
-      for (std::size_t vertex_group_index = 0; vertex_group_index < vertex_group_size;
-           vertex_group_index++)
-      {
-        u32 indice_index = 0;
-        std::memcpy(&indice_index, raw_data.data() + offset, sizeof(u32));
-        offset += sizeof(u32);
-
-        vertex_group_indices[vertex_group_index] = indice_index;
-      }
-      cpu_skinning_data.native_mesh_vertex_groups.push_back(vertex_group_indices);
-    }
-
-    data->m_cpu_skinning_data.try_emplace(draw_call_id, std::move(cpu_skinning_data));
+    std::vector<Eigen::Vector3f> positions;
+    positions.resize(positions_size);
+    const auto positions_byte_size = sizeof(float) * 3 * positions_size;
+    std::memcpy(positions.data(), raw_data.data() + offset, positions_byte_size);
+    offset += positions_byte_size;
+    data->m_original_positions[draw_call_id] = std::move(positions);
   }
 
   return true;
@@ -757,47 +865,29 @@ bool MeshData::ToDolphinMesh(File::IOFile* file_data, const MeshData& data)
     }
   }
 
-  const std::size_t cpu_skinning_map_size = data.m_cpu_skinning_data.size();
-  if (!file_data->WriteBytes(&cpu_skinning_map_size, sizeof(std::size_t)))
+  const bool has_cpu_skinning = data.m_cpu_skinning_rig.has_value();
+  if (!file_data->WriteBytes(&has_cpu_skinning, sizeof(bool)))
     return false;
-  for (const auto& [draw_call, cpu_skinning_data] : data.m_cpu_skinning_data)
+  if (data.m_cpu_skinning_rig)
+  {
+    if (!SkinningRig::ToBinary(file_data, *data.m_cpu_skinning_rig))
+      return false;
+  }
+
+  const std::size_t original_positions_map_size = data.m_original_positions.size();
+  if (!file_data->WriteBytes(&original_positions_map_size, sizeof(std::size_t)))
+    return false;
+  for (const auto& [draw_call, positions] : data.m_original_positions)
   {
     if (!file_data->WriteBytes(&draw_call, sizeof(GraphicsModSystem::DrawCallID)))
       return false;
 
-    const std::size_t vertex_group_data_size = cpu_skinning_data.native_mesh_group_data.size();
-    if (!file_data->WriteBytes(&vertex_group_data_size, sizeof(std::size_t)))
+    const std::size_t positions_size = positions.size();
+    if (!file_data->WriteBytes(&positions_size, sizeof(std::size_t)))
       return false;
-    for (const auto& vertex_group_data : cpu_skinning_data.native_mesh_group_data)
-    {
-      if (!file_data->WriteBytes(&vertex_group_data.centroid, sizeof(Common::Vec3)))
-        return false;
 
-      const std::size_t centroid_deltas = vertex_group_data.delta_positions_from_centroid.size();
-      if (!file_data->WriteBytes(&centroid_deltas, sizeof(std::size_t)))
-        return false;
-      for (const auto& centroid_delta : vertex_group_data.delta_positions_from_centroid)
-      {
-        if (!file_data->WriteBytes(&centroid_delta, sizeof(Common::Vec3)))
-          return false;
-      }
-    }
-
-    const std::size_t vertex_groups_size = cpu_skinning_data.native_mesh_vertex_groups.size();
-    if (!file_data->WriteBytes(&vertex_groups_size, sizeof(std::size_t)))
+    if (!file_data->WriteBytes(positions.data(), positions.size() * 3 * sizeof(float)))
       return false;
-    for (const auto& vertex_group : cpu_skinning_data.native_mesh_vertex_groups)
-    {
-      const std::size_t vertex_group_size = vertex_group.size();
-      if (!file_data->WriteBytes(&vertex_group_size, sizeof(std::size_t)))
-        return false;
-
-      for (const auto index : vertex_group)
-      {
-        if (!file_data->WriteBytes(&index, sizeof(u32)))
-          return false;
-      }
-    }
   }
 
   return true;
