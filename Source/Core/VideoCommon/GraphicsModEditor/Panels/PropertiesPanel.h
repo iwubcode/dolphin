@@ -29,6 +29,7 @@ private:
   void DrawCallIDSelected(const GraphicsModSystem::DrawCallID& selected_object);
   void TextureCacheIDSelected(const GraphicsModSystem::TextureCacheID& selected_object);
   void LightSelected(const GraphicsModSystem::LightID& selected_object);
+  void GroupSelected(const std::string& group_selected);
   void AssetDataSelected(EditorAsset* selected_object);
   void SelectionOccurred(const std::set<SelectableType>& selection);
 

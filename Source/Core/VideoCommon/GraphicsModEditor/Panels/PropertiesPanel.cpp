@@ -114,9 +114,10 @@ void PropertiesPanel::DrawImGui()
         overloaded{[&](const GraphicsModSystem::DrawCallID& drawcallid) {
                      DrawCallIDSelected(drawcallid);
                    },
-                   [&](const GraphicsModSystem::TextureCacheID& tcache_id) {
-                     TextureCacheIDSelected(tcache_id);
+                   [&](const TextureCacheWrapper& tcache_wrapper) {
+                     TextureCacheIDSelected(tcache_wrapper.id);
                    },
+                   [&](const GroupWrapper& group_wrapper) { GroupSelected(group_wrapper.id); },
                    [&](const GraphicsModSystem::LightID& light_id) { LightSelected(light_id); },
                    [&](GraphicsModAction* action) { action->DrawImGui(); },
                    [&](EditorAsset* asset_data) { AssetDataSelected(asset_data); }},
@@ -175,6 +176,42 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsModSystem::DrawCallID& se
     ImGui::Text("%lld", static_cast<long long int>(data.create_time.time_since_epoch().count()));
 
     ImGui::EndTable();
+  }
+
+  if (ImGui::CollapsingHeader("Group Details", ImGuiTreeNodeFlags_DefaultOpen))
+  {
+    if (ImGui::BeginTable("GroupForm", 2))
+    {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Name");
+      ImGui::TableNextColumn();
+
+      std::string group_name;
+      if (const auto user_iter =
+              m_state.m_user_data.m_draw_call_id_to_user_data.find(selected_object);
+          user_iter != m_state.m_user_data.m_draw_call_id_to_user_data.end())
+      {
+        group_name = user_iter->second.m_group;
+      }
+      if (ImGui::InputText("##FrameTargetGroupName", &group_name))
+      {
+        auto& user_data = m_state.m_user_data.m_draw_call_id_to_user_data[selected_object];
+        user_data.m_group = std::move(group_name);
+        GetEditorEvents().change_occurred_event.Trigger();
+      }
+
+      ImGui::EndTable();
+    }
+  }
+
+  if (const auto user_iter = m_state.m_user_data.m_draw_call_id_to_user_data.find(selected_object);
+      user_iter != m_state.m_user_data.m_draw_call_id_to_user_data.end())
+  {
+    ShowTags<GraphicsModSystem::DrawCallTag>(GraphicsModSystem::Runtime::GetDrawCallTags(),
+                                             GraphicsModSystem::Runtime::GetDrawCallTagConfig(),
+                                             &user_iter->second.tag_flags,
+                                             &m_tag_selection_window_active);
   }
 
   if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen))
@@ -245,15 +282,6 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsModSystem::DrawCallID& se
         ImGui::Text("No");
       ImGui::EndTable();
     }
-  }
-
-  if (const auto user_iter = m_state.m_user_data.m_draw_call_id_to_user_data.find(selected_object);
-      user_iter != m_state.m_user_data.m_draw_call_id_to_user_data.end())
-  {
-    ShowTags<GraphicsModSystem::DrawCallTag>(GraphicsModSystem::Runtime::GetDrawCallTags(),
-                                             GraphicsModSystem::Runtime::GetDrawCallTagConfig(),
-                                             &user_iter->second.tag_flags,
-                                             &m_tag_selection_window_active);
   }
 
   if (ImGui::CollapsingHeader("Geometry", ImGuiTreeNodeFlags_DefaultOpen))
@@ -640,6 +668,19 @@ void PropertiesPanel::LightSelected(const GraphicsModSystem::LightID& selected_o
     ImGui::TableNextColumn();
     ImGui::InputFloat4("##LightCosAtt", data.m_cosatt.data(), "%.3f", ImGuiInputTextFlags_ReadOnly);
 
+    ImGui::EndTable();
+  }
+}
+
+void PropertiesPanel::GroupSelected(const std::string& selected_object)
+{
+  if (ImGui::BeginTable("GroupTargetForm", 2))
+  {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::Text("Group Name");
+    ImGui::TableNextColumn();
+    ImGui::Text("%s", selected_object.c_str());
     ImGui::EndTable();
   }
 }
