@@ -7,6 +7,7 @@
 #include <future>
 #include <queue>
 #include <random>
+#include <set>
 #include <utility>
 
 #include <Eigen/Core>
@@ -21,11 +22,14 @@
 #include <tinygltf/tiny_gltf.h>
 
 #include "Common/FileUtil.h"
+#include "Common/IOFile.h"
 #include "Common/JsonUtil.h"
 #include "Common/Logging/Log.h"
 #include "Common/TimeUtil.h"
 
 #include "Core/ConfigManager.h"
+
+#include "VideoCommon/GraphicsModEditor/GpuSkinningDataUtils.h"
 
 #ifdef _MSC_VER
 #pragma warning(disable : 4267)  // "conversion from size_t to int in libigl
@@ -167,18 +171,85 @@ bool IsDuplicateMesh(const Eigen::Matrix3Xd& mesh,
 }
 
 /**
+ * @brief Combines individual 3xN chunks into one 3xTotal global matrix.
+ * @param chunks A vector of matrices, one for each capture chunk.
+ * @return A single Eigen::Matrix3Xd representing the full captured pose.
+ */
+Eigen::Matrix3Xd StitchChunks(const std::vector<Eigen::Matrix3Xd>& chunks)
+{
+  // 1. Calculate total vertex count
+  int total_vertices = 0;
+  for (const auto& chunk : chunks)
+  {
+    total_vertices += (int)chunk.cols();
+  }
+
+  // 2. Pre-allocate the global matrix [3 rows x Total Cols]
+  Eigen::Matrix3Xd V_global(3, total_vertices);
+
+  // 3. Fill the global matrix chunk-by-chunk
+  int current_offset = 0;
+  for (const auto& chunk : chunks)
+  {
+    // block(start_row, start_col, num_rows, num_cols)
+    V_global.block(0, current_offset, 3, chunk.cols()) = chunk;
+    current_offset += (int)chunk.cols();
+  }
+
+  return V_global;
+}
+
+std::vector<Eigen::Matrix3Xd> ReassembleSignificantFrames(
+    const std::map<GraphicsModSystem::DrawCallID, GraphicsModEditor::VertexGroupDumper::FinalData>&
+        draw_call_to_mesh_data)
+{
+  std::set<int> frames_with_changes;
+  std::vector<Eigen::Matrix3Xd> lastKnownPoses;
+  for (const auto& [draw_call, data] : draw_call_to_mesh_data)
+  {
+    for (auto const& [frame_id, mesh_index] : data.frame_id_to_mesh_index)
+    {
+      frames_with_changes.insert(frame_id);
+    }
+
+    // Initialize with our rest pose (first frame)
+    lastKnownPoses.push_back(data.mesh_poses[0]);
+  }
+
+  std::vector<Eigen::Matrix3Xd> motionFrames;
+  for (int frame_id : frames_with_changes)
+  {
+    std::size_t draw_call_count = 0;
+    for (const auto& [draw_call, data] : draw_call_to_mesh_data)
+    {
+      if (auto it = data.frame_id_to_mesh_index.find(frame_id);
+          it != data.frame_id_to_mesh_index.end())
+      {
+        lastKnownPoses[draw_call_count] = data.mesh_poses[it->second];
+      }
+      draw_call_count++;
+    }
+    // This frame now contains the most recent data for every chunk
+    motionFrames.push_back(StitchChunks(lastKnownPoses));
+  }
+
+  return motionFrames;
+}
+
+/**
  * Normalizes an animation sequence after it has been welded.
  * 1. Centers Pose 0 at the origin.
  * 2. Scales based on Pose 0 bounding box.
  * 3. Aligns all frames to Pose 0.
  */
-void NormalizeWeldedAnimation(std::vector<Eigen::Matrix3Xd>& poses, double& outScale)
+void NormalizeWeldedAnimation(std::vector<Eigen::Matrix3Xd>& poses, double& outScale,
+                              Eigen::Vector3d& centroid)
 {
   if (poses.empty())
     return;
 
   // A. Center and Scale based on Pose 0
-  Eigen::Vector3d centroid = poses[0].rowwise().mean();
+  centroid = poses[0].rowwise().mean();
   for (auto& p : poses)
     p.colwise() -= centroid;
 
@@ -707,42 +778,50 @@ std::vector<std::vector<int>> ReconstructGroups(const std::vector<int>& cleanAss
   return groups;
 }
 
-struct VertexInfluence
+std::vector<GraphicsModEditor::VertexInfluence> FindTopInfluences(const Eigen::MatrixXd& W)
 {
-  std::array<unsigned short, 4> joints;
-  std::array<float, 4> weights;
-};
-
-std::vector<VertexInfluence> FormatInfluencesForGLTF(const Eigen::MatrixXd& W)
-{
-  int N = W.rows();
-  int B = W.cols();
-  std::vector<VertexInfluence> influences(N);
+  const int N = static_cast<int>(W.rows());
+  const int B = static_cast<int>(W.cols());
+  std::vector<GraphicsModEditor::VertexInfluence> influences(N);
 
   for (int i = 0; i < N; ++i)
   {
-    // Find top 4 weights
+    // 1. Collect all candidates
     std::vector<std::pair<int, double>> pairs;
     for (int j = 0; j < B; ++j)
     {
       pairs.push_back({j, W(i, j)});
     }
+
+    // 2. Sort descending
     std::sort(pairs.begin(), pairs.end(),
               [](const auto& a, const auto& b) { return a.second > b.second; });
 
-    double sum = 0;
+    // 3. Extract Top 4 and sum them for re-normalization
+    double sum = 0.0;
     for (int j = 0; j < 4; ++j)
     {
-      influences[i].joints[j] = static_cast<unsigned short>(pairs[j].first);
-      influences[i].weights[j] = static_cast<float>(pairs[j].second);
-      sum += pairs[j].second;
+      // Pad with bone 0 / weight 0 if less than 4 bones exist
+      if (j < pairs.size())
+      {
+        influences[i].bone_ids[j] = pairs[j].first;
+        influences[i].weights[j] = static_cast<float>(pairs[j].second);
+        sum += pairs[j].second;
+      }
+      else
+      {
+        influences[i].bone_ids[j] = 0;
+        influences[i].weights[j] = 0.0f;
+      }
     }
 
-    // Re-normalize top 4 so they sum to 1.0
+    // 4. Final Truncation Normalization
     if (sum > 1e-6)
     {
       for (int j = 0; j < 4; ++j)
+      {
         influences[i].weights[j] /= static_cast<float>(sum);
+      }
     }
   }
   return influences;
@@ -904,7 +983,7 @@ int AddBufferToModel(tinygltf::Model& model, const std::vector<T>& data, int tar
 
 void ExportToGLTF(const std::string& path, const Eigen::Matrix3Xd& V, const Eigen::MatrixXi& F,
                   const std::vector<Eigen::Vector3d>& boneCenters,
-                  const std::vector<VertexInfluence>& influences)
+                  const std::vector<GraphicsModEditor::VertexInfluence>& influences)
 {
   tinygltf::Model model;
   tinygltf::Asset asset;
@@ -928,26 +1007,26 @@ void ExportToGLTF(const std::string& path, const Eigen::Matrix3Xd& V, const Eige
     indexData.push_back((uint32_t)F(i, 2));
   }
 
-  std::vector<uint16_t> jointData;
-  std::vector<float> weightData;
+  std::vector<u16> bone_data;
+  std::vector<float> weight_data;
   for (const auto& inf : influences)
   {
     for (int j = 0; j < 4; ++j)
     {
-      jointData.push_back(inf.joints[j]);
-      weightData.push_back(inf.weights[j]);
+      bone_data.push_back(static_cast<u16>(inf.bone_ids[j]));
+      weight_data.push_back(inf.weights[j]);
     }
   }
 
   // 2. Pack Buffers
-  int posAcc =
+  const int posAcc =
       AddBufferToModel(model, posData, 34962, TINYGLTF_TYPE_VEC3, TINYGLTF_COMPONENT_TYPE_FLOAT);
-  int idxAcc = AddBufferToModel(model, indexData, 34963, TINYGLTF_TYPE_SCALAR,
-                                TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT);
-  int jntAcc = AddBufferToModel(model, jointData, 34962, TINYGLTF_TYPE_VEC4,
-                                TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT);
-  int wgtAcc =
-      AddBufferToModel(model, weightData, 34962, TINYGLTF_TYPE_VEC4, TINYGLTF_COMPONENT_TYPE_FLOAT);
+  const int idxAcc = AddBufferToModel(model, indexData, 34963, TINYGLTF_TYPE_SCALAR,
+                                      TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT);
+  const int jntAcc = AddBufferToModel(model, bone_data, 34962, TINYGLTF_TYPE_VEC4,
+                                      TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT);
+  const int wgtAcc = AddBufferToModel(model, weight_data, 34962, TINYGLTF_TYPE_VEC4,
+                                      TINYGLTF_COMPONENT_TYPE_FLOAT);
 
   std::vector<float> ibmData;
   for (const auto& center : boneCenters)
@@ -1015,6 +1094,88 @@ void ExportToGLTF(const std::string& path, const Eigen::Matrix3Xd& V, const Eige
   writer.WriteGltfSceneToFile(&model, path, true, true, true, false);
 }
 
+void ExportRigBinary(
+    File::IOFile* file_data,
+    const Eigen::MatrixXd& V_welded,    // Unique Positions [3 x N]
+    const Eigen::VectorXi& global_SVJ,  // Map: UnweldedIdx -> WeldedIdx
+    const std::vector<GraphicsModEditor::VertexInfluence>& vertex_influences,
+    const std::vector<Eigen::Vector3d>& bone_centers,
+    const std::map<GraphicsModSystem::DrawCallID, GraphicsModEditor::VertexGroupDumper::FinalData>&
+        draw_call_to_data,
+    const Eigen::Vector3d& mesh_centroid, double mesh_scale)
+{
+  GraphicsModEditor::ExporterSkinningRig export_rig;
+
+  // 1. Convert Global Welded Cage
+  // If V_welded is [3 x N], .col(i) is correct.
+  export_rig.runtime_rig.welded_positions.reserve(V_welded.cols());
+  for (int i = 0; i < V_welded.cols(); ++i)
+  {
+    export_rig.runtime_rig.welded_positions.push_back(V_welded.col(i).cast<float>());
+  }
+
+  // 2. Bone Centers & Weights
+  export_rig.global_weights = vertex_influences;
+  for (const auto& bc_double : bone_centers)
+  {
+    export_rig.runtime_rig.bone_rest_centers.push_back(bc_double.cast<float>());
+  }
+
+  // 3. Chunk-Specific Slicing (SVJ + Bone Groups)
+  std::size_t global_v_offset = 0;
+  for (auto const& [draw_call, data] : draw_call_to_data)
+  {
+    const u32 v_count = static_cast<u32>(data.original_vertex_count);
+
+    // --- PART A: Local SVJ (Native -> Welded Map) ---
+    auto& local_svj = export_rig.draw_call_to_local_svj[draw_call];
+    local_svj.reserve(v_count);
+    for (u32 i = 0; i < v_count; ++i)
+    {
+      // global_SVJ is a VectorXi, so we just use () or []
+      local_svj.push_back(global_SVJ(global_v_offset + i));
+    }
+
+    // --- PART B: SVD Tracking Groups (ChunkRigData) ---
+    // This tells the SVD solver: "In this chunk, which vertices belong to which bone?"
+    VideoCommon::ChunkRigData& chunk_rig = export_rig.runtime_rig.draw_call_rig_details[draw_call];
+    chunk_rig.draw_call_id = draw_call;
+
+    for (u32 local_i = 0; local_i < v_count; ++local_i)
+    {
+      int welded_idx = local_svj[local_i];
+      const GraphicsModEditor::VertexInfluence& inf = vertex_influences[welded_idx];
+
+      // Check all 4 baked influences for this vertex
+      for (int k = 0; k < 4; ++k)
+      {
+        float w = inf.weights[k];
+        // Only track vertices with significant weight to keep SVD stable
+        if (w > 0.1f)
+        {
+          int b_id = inf.bone_ids[k];
+          auto& group = chunk_rig.bone_groups[b_id];
+          group.bone_id = b_id;
+
+          // PAIR CORRESPONDENCE:
+          // We need the moving vertex (local_i) and the rest vertex (welded_idx)
+          group.original_indices.push_back(static_cast<int>(local_i));
+          group.welded_indices.push_back(welded_idx);
+          group.weights.push_back(w);  // Confidence score for SVD
+        }
+      }
+    }
+
+    global_v_offset += v_count;
+  }
+
+  // The scale/centroid
+  export_rig.runtime_rig.welded_rig_scale = static_cast<float>(mesh_scale);
+  export_rig.runtime_rig.welded_rig_centroid = mesh_centroid.cast<float>();
+
+  GraphicsModEditor::ExporterSkinningRig::ToBinary(file_data, export_rig);
+}
+
 }  // namespace
 
 namespace GraphicsModEditor
@@ -1049,11 +1210,12 @@ void VertexGroupDumper::AddDataToRecording(GraphicsModSystem::DrawCallID draw_ca
       ConvertMeshPositions(current_vertex_positions, position_transform.Inverted());
   auto& data = m_draw_call_to_data[draw_call_id];
 
-  if (IsDuplicateMesh(matrix_positions, data.vertex_meshes))
+  if (IsDuplicateMesh(matrix_positions, data.mesh_poses))
     return;
 
-  if (data.vertex_meshes.empty())
+  if (data.original_vertex_count == 0)
   {
+    data.original_vertex_count = current_vertex_positions.size();
     if (draw_data.uid->rasterization_state.primitive == PrimitiveType::TriangleStrip)
     {
       std::vector<int> indices;
@@ -1127,7 +1289,46 @@ void VertexGroupDumper::AddDataToRecording(GraphicsModSystem::DrawCallID draw_ca
     }
   }
 
-  data.vertex_meshes.push_back(std::move(matrix_positions));
+  m_current_xfb_data.emplace_back(draw_call_id, std::move(matrix_positions));
+}
+
+void VertexGroupDumper::OnXFBCreated(const std::string& hash)
+{
+  if (!m_recording_request.has_value())
+    return;
+
+  m_xfb_to_draw_data[hash] = std::move(m_current_xfb_data);
+}
+
+void VertexGroupDumper::OnFramePresented(std::span<std::string> xfbs_presented)
+{
+  if (m_xfb_to_draw_data.empty())
+    return;
+
+  for (const auto& xfb : xfbs_presented)
+  {
+    if (const auto iter = m_xfb_to_draw_data.find(xfb); iter != m_xfb_to_draw_data.end())
+    {
+      for (auto& [draw_call, data] : iter->second)
+      {
+        auto& final_data = m_draw_call_to_data[draw_call];
+        final_data.mesh_poses.push_back(std::move(data));
+        final_data.frame_id_to_mesh_index[m_frame_id] = final_data.mesh_poses.size() - 1;
+      }
+      m_xfb_to_draw_data.erase(iter);
+    }
+  }
+
+  // If our recording is done and we have no data left to capture
+  if (m_xfb_to_draw_data.empty() && !m_recording_request.has_value())
+  {
+    Save();
+    m_draw_call_to_data.clear();
+    m_frame_id = 0;
+    return;
+  }
+
+  m_frame_id++;
 }
 
 void VertexGroupDumper::Record(const VertexGroupRecordingRequest& request)
@@ -1138,110 +1339,83 @@ void VertexGroupDumper::Record(const VertexGroupRecordingRequest& request)
 void VertexGroupDumper::StopRecord()
 {
   m_recording_request.reset();
+}
 
-  struct VertexGroupResults
+bool VertexGroupDumper::IsRecording() const
+{
+  return m_recording_request.has_value();
+}
+
+void VertexGroupDumper::Save()
+{
+  if (m_draw_call_to_data.empty()) [[unlikely]]
+    return;
+
+  Eigen::MatrixXi F_global;
+  std::size_t v_offset = 0;
+  for (const auto& [draw_call, data] : m_draw_call_to_data)
   {
-    std::vector<int> vertex_transform_groups;
-    Eigen::MatrixXi face_indices;
-    Eigen::Matrix3Xd rest_pose;
-    int bone_count;
-  };
-
-  std::map<GraphicsModSystem::DrawCallID, VertexGroupResults> draw_call_to_vertex_group_results;
-
-  picojson::object json_data;
-  for (auto& [draw_call, data] : m_draw_call_to_data)
-  {
-    picojson::object group_data;
-
-    // TODO: error
-    if (data.vertex_meshes.size() <= 1)
-      continue;
-
-    const std::size_t original_vertex_count = data.vertex_meshes[0].cols();
-
-    // 1. Weld the Mean Pose
-    Eigen::MatrixXd SV;  // New unique vertices
-    Eigen::VectorXi SVI,
-        SVJ;  // SVI: indices into original V; SVJ: original indices mapped to unique ones
-    igl::remove_duplicate_vertices(data.vertex_meshes[0].transpose(), 1e-7, SV, SVI, SVJ);
-
-    // Update Faces to point to the new indices
-    Eigen::MatrixXi SF(data.rest_pose_face_indexes.rows(), 3);
-    for (int i = 0; i < data.rest_pose_face_indexes.rows(); ++i)
-    {
-      for (int j = 0; j < 3; ++j)
-      {
-        int new_index = SVJ(data.rest_pose_face_indexes(i, j));
-        SF(i, j) = new_index;  // Maps original index to unique index
-      }
-    }
-
-    // Update all other poses to have the same mapping
-    for (auto& pose : data.vertex_meshes)
-    {
-      Eigen::Matrix3Xd newPose(3, SV.rows());
-      for (int i = 0; i < SVI.size(); ++i)
-      {
-        // SVI contains the indices of the original vertices that survived
-        newPose.col(i) = pose.col(SVI(i));
-      }
-      pose = newPose;
-    }
-
-    double mesh_scale;
-    NormalizeWeldedAnimation(data.vertex_meshes, mesh_scale);
-
-    /**
-     * @brief The Error Budget (Tolerance) for bone creation.
-     *
-     * How it works:
-     * The algorithm splits the mesh into bones until the Total Squared Error (SSE)
-     * of the reconstructed animation falls below this value.
-     *
-     * Range Guide (for a mesh scaled to 1.0 diagonal):
-     * - 0.001 to 0.01: HIGH DETAIL. Produces 30-50 bones. (Fingers, facial features).
-     * - 0.01 to 0.1: BALANCED. Produces 15-25 bones. (Standard game characters).
-     * - 0.1 to 0.5: LOW DETAIL. Produces 5-10 bones. (LODs or background props).
-     *
-     * Note: If your mesh isn't scaled to 1.0, this value must be multiplied
-     * by (scale^2) to remain effective.
-     */
-    const double tolerance = 0.05;
-    auto clean_grouping =
-        CalculateVertexGroupsAdaptive(data.vertex_meshes, data.vertex_meshes[0], tolerance);
-
-    int bone_count = 0;
-    for (int id : clean_grouping)
-    {
-      bone_count = std::max(bone_count, id + 1);
-    }
-
-    CleanBoneIslands(clean_grouping, SF, data.vertex_meshes[0].cols(), bone_count);
-
-    std::vector<int> grouping(original_vertex_count);
-    for (std::size_t i = 0; i < original_vertex_count; ++i)
-    {
-      int uniqueIdx = SVJ(i);
-      grouping[i] = clean_grouping[uniqueIdx];
-    }
-    for (std::size_t i = 0; i < grouping.size(); i++)
-    {
-      const auto group_assignment = grouping[i];
-      const auto [iter, added] =
-          group_data.try_emplace(std::to_string(group_assignment), picojson::array{});
-      iter->second.get<picojson::array>().emplace_back(static_cast<double>(i));
-    }
-
-    json_data.try_emplace(std::to_string(std::to_underlying(draw_call)), group_data);
-
-    const auto [it, added] =
-        draw_call_to_vertex_group_results.try_emplace(draw_call, VertexGroupResults{});
-    it->second.vertex_transform_groups = std::move(clean_grouping);
-    it->second.rest_pose = data.vertex_meshes[0];
-    it->second.face_indices = std::move(SF);
-    it->second.bone_count = bone_count;
+    F_global.conservativeResize(F_global.rows() + data.rest_pose_face_indexes.rows(), 3);
+    F_global.bottomRows(data.rest_pose_face_indexes.rows()) =
+        data.rest_pose_face_indexes.array() + v_offset;
+    v_offset += data.original_vertex_count;  // Number of vertices in THIS chunk
   }
+
+  auto reassembled_data = ReassembleSignificantFrames(m_draw_call_to_data);
+
+  // 1. Weld the Mean Pose
+  Eigen::MatrixXd SV;  // New unique vertices
+
+  // SVI: indices into original V
+  // SVJ: original indices mapped to unique ones
+  // SF: welded global faces
+  Eigen::VectorXi SVI;
+  Eigen::VectorXi SVJ;
+  Eigen::MatrixXi SF;
+  igl::remove_duplicate_vertices(reassembled_data[0].transpose(), F_global, 1e-7, SV, SVI, SVJ, SF);
+
+  // Update all other poses to have the same mapping
+  for (auto& pose : reassembled_data)
+  {
+    Eigen::Matrix3Xd newPose(3, SV.rows());
+    for (int i = 0; i < SVI.size(); ++i)
+    {
+      // SVI contains the indices of the original vertices that survived
+      newPose.col(i) = pose.col(SVI(i));
+    }
+    pose = newPose;
+  }
+
+  double mesh_scale;
+  Eigen::Vector3d mesh_centroid;
+  NormalizeWeldedAnimation(reassembled_data, mesh_scale, mesh_centroid);
+
+  /**
+   * @brief The Error Budget (Tolerance) for bone creation.
+   *
+   * How it works:
+   * The algorithm splits the mesh into bones until the Total Squared Error (SSE)
+   * of the reconstructed animation falls below this value.
+   *
+   * Range Guide (for a mesh scaled to 1.0 diagonal):
+   * - 0.001 to 0.01: HIGH DETAIL. Produces 30-50 bones. (Fingers, facial features).
+   * - 0.01 to 0.1: BALANCED. Produces 15-25 bones. (Standard game characters).
+   * - 0.1 to 0.5: LOW DETAIL. Produces 5-10 bones. (LODs or background props).
+   *
+   * Note: If your mesh isn't scaled to 1.0, this value must be multiplied
+   * by (scale^2) to remain effective.
+   */
+  const double tolerance = 0.05;
+  auto clean_grouping =
+      CalculateVertexGroupsAdaptive(reassembled_data, reassembled_data[0], tolerance);
+
+  int bone_count = 0;
+  for (int id : clean_grouping)
+  {
+    bone_count = std::max(bone_count, id + 1);
+  }
+
+  CleanBoneIslands(clean_grouping, SF, reassembled_data[0].cols(), bone_count);
 
   const std::string path_prefix =
       File::GetUserPath(D_DUMP_IDX) + SConfig::GetInstance().GetGameID();
@@ -1252,43 +1426,25 @@ void VertexGroupDumper::StopRecord()
     return;
 
   const std::string base_name = fmt::format("{}_{:%Y-%m-%d_%H-%M-%S}", path_prefix, *local_time);
-  const std::string save_path = fmt::format("{}.vertexgroups", base_name);
 
-  if (!JsonToFile(save_path, picojson::value{json_data}, true))
+  SimpleGeodesic::HeatGeodesicsData heat_data;
+  if (!SimpleGeodesic::heat_geodesics_precompute(reassembled_data[0].transpose(), SF, heat_data))
   {
     // TODO: error
+    return;
   }
 
-  for (auto& [draw_call, data] : m_draw_call_to_data)
-  {
-    const auto iter = draw_call_to_vertex_group_results.find(draw_call);
-    if (iter == draw_call_to_vertex_group_results.end())
-      continue;
+  const auto weights =
+      ComputeHarmonicWeights(clean_grouping, reassembled_data[0], SF, heat_data, bone_count);
+  const auto influences = FindTopInfluences(weights);
 
-    SimpleGeodesic::HeatGeodesicsData heat_data;
-    if (!SimpleGeodesic::heat_geodesics_precompute(iter->second.rest_pose.transpose(),
-                                                   iter->second.face_indices, heat_data))
-    {
-      continue;
-    }
+  const auto bone_groups = ReconstructGroups(clean_grouping, bone_count);
+  const auto bone_centers = ComputeBoneRestPositions(bone_groups, reassembled_data[0]);
+  ExportToGLTF(fmt::format("{}_bones.gltf", base_name), reassembled_data[0], SF, bone_centers,
+               influences);
 
-    const auto weights =
-        ComputeHarmonicWeights(iter->second.vertex_transform_groups, iter->second.rest_pose,
-                               iter->second.face_indices, heat_data, iter->second.bone_count);
-    const auto influences = FormatInfluencesForGLTF(weights);
-
-    const auto bone_groups =
-        ReconstructGroups(iter->second.vertex_transform_groups, iter->second.bone_count);
-    const auto bone_centers = ComputeBoneRestPositions(bone_groups, iter->second.rest_pose);
-    ExportToGLTF(fmt::format("{}_bones.gltf", base_name), iter->second.rest_pose,
-                 iter->second.face_indices, bone_centers, influences);
-  }
-
-  m_draw_call_to_data.clear();
-}
-
-bool VertexGroupDumper::IsRecording() const
-{
-  return m_recording_request.has_value();
+  File::IOFile outbound_file(fmt::format("{}.rig", base_name), "wb");
+  ExportRigBinary(&outbound_file, reassembled_data[0], SVJ, influences, bone_centers,
+                  m_draw_call_to_data, mesh_centroid, mesh_scale);
 }
 }  // namespace GraphicsModEditor
