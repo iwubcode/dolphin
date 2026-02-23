@@ -87,8 +87,10 @@ struct UserData
 
   std::vector<GraphicsModSystem::Config::GraphicsModTag> m_tags;
 
+  std::vector<std::string> m_groups;
+
   // References of actions defined by the user to provide to the graphics mod interface
-  std::map<std::string, std::vector<GraphicsModAction*>> m_tag_name_to_actions;
+  std::map<std::string, std::vector<GraphicsModAction*>, std::less<>> m_named_group_to_actions;
 
   // Mapping the draw call id to any user data for the target
   std::map<GraphicsModSystem::DrawCallID, DrawCallUserData> m_draw_call_id_to_user_data;

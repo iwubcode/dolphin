@@ -27,6 +27,7 @@ void WriteToGraphicsMod(const UserData& user_data, GraphicsModSystem::Config::Gr
 
   config->m_assets = user_data.m_asset_library->GetAssets(user_data.m_current_mod_path);
   config->m_tags = user_data.m_tags;
+  config->m_groups = user_data.m_groups;
 
   std::map<GraphicsModAction*, std::size_t> action_to_index;
   for (const auto& action : user_data.m_actions)
@@ -42,9 +43,9 @@ void WriteToGraphicsMod(const UserData& user_data, GraphicsModSystem::Config::Gr
     action_to_index[action.get()] = config->m_actions.size() - 1;
   }
 
-  for (const auto& [tag_name, actions] : user_data.m_tag_name_to_actions)
+  for (const auto& [named_group, actions] : user_data.m_named_group_to_actions)
   {
-    auto& action_indexes = config->m_tag_name_to_action_indexes[tag_name];
+    auto& action_indexes = config->m_named_group_to_action_indexes[named_group];
     for (const auto& action : actions)
     {
       action_indexes.push_back(action_to_index[action]);
@@ -83,6 +84,7 @@ void WriteToGraphicsMod(const UserData& user_data, GraphicsModSystem::Config::Gr
       i_target.m_name = iter->second.m_friendly_name;
       i_target.m_tag_names =
           GraphicsModSystem::Runtime::GetNamesFromDrawCallTags(iter->second.tag_flags);
+      i_target.m_group = iter->second.m_group;
     }
     config->m_targets.push_back(std::move(i_target));
   }
@@ -119,6 +121,7 @@ void WriteToGraphicsMod(const UserData& user_data, GraphicsModSystem::Config::Gr
       s_target.m_name = iter->second.m_friendly_name;
       s_target.m_tag_names =
           GraphicsModSystem::Runtime::GetNamesFromTextureTags(iter->second.tag_flags);
+      s_target.m_group = iter->second.m_group;
     }
     config->m_targets.push_back(std::move(s_target));
   }
@@ -169,28 +172,30 @@ void ReadFromGraphicsMod(UserData* user_data, EditorData* editor_data,
               auto& actions = user_data->m_draw_call_id_to_actions[draw_call_id];
               actions = {};
 
+              auto& target_user_data = user_data->m_draw_call_id_to_user_data[draw_call_id];
               if (int_target.m_name != "")
               {
-                user_data->m_draw_call_id_to_user_data[draw_call_id].m_friendly_name =
-                    int_target.m_name;
+                target_user_data.m_friendly_name = int_target.m_name;
               }
 
-              user_data->m_draw_call_id_to_user_data[draw_call_id].tag_flags =
+              target_user_data.tag_flags =
                   GraphicsModSystem::Runtime::GetDrawCallTagsFromNames(int_target.m_tag_names);
+              target_user_data.m_group = int_target.m_group;
             },
             [&](const GraphicsModSystem::Config::StringTarget& str_target) {
               const GraphicsModSystem::TextureCacheID texture_cache_id{str_target.m_target_id};
               auto& actions = user_data->m_texture_cache_id_to_actions[texture_cache_id];
               actions = {};
 
+              auto& target_user_data = user_data->m_texture_cache_id_to_user_data[texture_cache_id];
               if (str_target.m_name != "")
               {
-                user_data->m_texture_cache_id_to_user_data[texture_cache_id].m_friendly_name =
-                    str_target.m_name;
+                target_user_data.m_friendly_name = str_target.m_name;
               }
 
-              user_data->m_texture_cache_id_to_user_data[texture_cache_id].tag_flags =
+              target_user_data.tag_flags =
                   GraphicsModSystem::Runtime::GetTextureTagsFromNames(str_target.m_tag_names);
+              target_user_data.m_group = str_target.m_group;
             }},
         target);
   }
@@ -222,9 +227,9 @@ void ReadFromGraphicsMod(UserData* user_data, EditorData* editor_data,
         config.m_targets[target_index]);
   }
 
-  for (const auto& [tag_name, action_indexes] : config.m_tag_name_to_action_indexes)
+  for (const auto& [named_group, action_indexes] : config.m_named_group_to_action_indexes)
   {
-    auto& actions = user_data->m_tag_name_to_actions[tag_name];
+    auto& actions = user_data->m_named_group_to_actions[named_group];
     for (const auto& action_index : action_indexes)
     {
       actions.push_back(user_data->m_actions[action_index].get());
