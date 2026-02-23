@@ -268,10 +268,47 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
     }
     else
     {
-      if (const auto iter = m_state.m_user_data.m_draw_call_id_to_actions.find(draw_call_id);
-          iter != m_state.m_user_data.m_draw_call_id_to_actions.end())
+      // All this lookup feels really gross, maybe we can centralize it?
+      std::string_view group = "";
+      std::span<GraphicsModAction*> actions;
+
+      if (const auto user_iter = m_state.m_user_data.m_draw_call_id_to_user_data.find(draw_call_id);
+          user_iter != m_state.m_user_data.m_draw_call_id_to_user_data.end())
       {
-        CustomDraw(draw_data, vertex_manager, iter->second, hash_output.draw_call_id);
+        if (!user_iter->second.m_group.empty())
+        {
+          group = user_iter->second.m_group;
+          if (const auto group_iter = m_state.m_user_data.m_named_group_to_actions.find(group);
+              group_iter != m_state.m_user_data.m_named_group_to_actions.end())
+          {
+            actions = group_iter->second;
+          }
+        }
+      }
+
+      if (actions.empty())
+      {
+        if (const auto iter = m_state.m_user_data.m_draw_call_id_to_actions.find(draw_call_id);
+            iter != m_state.m_user_data.m_draw_call_id_to_actions.end())
+        {
+          actions = iter->second;
+        }
+      }
+
+      if (m_selected_objects.contains(GroupWrapper{std::string{group}}))
+      {
+        auto& resource_manager = Core::System::GetInstance().GetCustomResourceManager();
+        auto* material_resource = resource_manager.GetMaterialFromAsset(
+            "editor-highlight-material", *draw_data.uid, m_state.m_editor_data.m_asset_library);
+        const auto material_data = material_resource->GetData();
+        if (material_data)
+        {
+          vertex_manager->DrawEmulatedMesh(*material_data, draw_data, identity, m_camera_manager);
+        }
+      }
+      else if (!actions.empty())
+      {
+        CustomDraw(draw_data, vertex_manager, actions, hash_output.draw_call_id, group);
       }
       else
       {
@@ -407,6 +444,7 @@ void EditorBackend::OnTextureCreate(const GraphicsModSystem::TextureView& textur
     m_state.m_runtime_data.m_current_xfb = {};
 
     m_state.m_scene_dumper.OnXFBCreated(xfb_hash_name);
+    m_state.m_vertex_group_dumper.OnXFBCreated(xfb_hash_name);
     m_xfb_counter++;
     return;
   }
@@ -447,6 +485,7 @@ void EditorBackend::OnFramePresented(const PresentInfo& present_info)
   }
 
   m_state.m_scene_dumper.OnFramePresented(m_state.m_runtime_data.m_xfbs_presented);
+  m_state.m_vertex_group_dumper.OnFramePresented(m_state.m_runtime_data.m_xfbs_presented);
 }
 
 void EditorBackend::SelectionOccurred(const std::set<SelectableType>& selection)
@@ -458,8 +497,13 @@ void EditorBackend::SelectionOccurred(const std::set<SelectableType>& selection)
   {
     if (const auto action = std::get_if<GraphicsModAction*>(&selected_object))
     {
+      // TODO: get this to work for groups!
+      const auto draw_call = (*action)->GetDrawCall();
+      if (draw_call == GraphicsModSystem::DrawCallID::INVALID)
+        continue;
+
       if (const auto transform = (*action)->GetTransform())
-        m_selected_transforms.emplace_back((*action)->GetDrawCall(), transform);
+        m_selected_transforms.emplace_back(draw_call, transform);
     }
   }
 }
