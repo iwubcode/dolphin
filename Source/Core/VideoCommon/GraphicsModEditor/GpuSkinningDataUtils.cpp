@@ -491,6 +491,14 @@ void NormalizeWeights(VertexInfluence& inf)
   }
 }
 
+/**
+ * @brief Blends weights from a source vertex to a target vertex (used during mesh injection).
+ *
+ * This ensures that as we transfer weights from native to high-poly, we:
+ * 1. Accumulate influences correctly.
+ * 2. Maintain a strict 4-bone limit for GPU compatibility.
+ * 3. Re-normalize weights so they sum to 1.0 (preventing "black-hole" vertices).
+ */
 void BlendInfluence(VertexInfluence& target, const VertexInfluence& source, float factor)
 {
   std::map<int, float> accumulator;
@@ -583,14 +591,6 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
   using MeshVertexData = std::pair<u16, OriginalVertexData>;
   std::map<GraphicsModSystem::DrawCallID, std::map<std::size_t, IntermediateMeshChunkData>>
       draw_call_to_chunk_to_mesh_data;
-
-  // Add a global flat list of all assigned triangles to make smoothing easy
-  struct GlobalTriangleRef
-  {
-    GraphicsModSystem::DrawCallID* assigned_id;
-    std::array<u32, 3> indices;
-  };
-  std::vector<GlobalTriangleRef> replacement_triangles;
 
   u32 num_replacement_vertices = 0;
   for (const auto& chunk : reference_mesh_data.m_mesh_chunks)
@@ -852,7 +852,7 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
         }
       }
 
-      if (cpu_skinning_rig)
+      if (cpu_skinning_rig && !native_vertex_declaration.posmtx.enable)
       {
         const u32 component_type = VB_HAS_WEIGHTS;
 
@@ -1058,7 +1058,7 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
           }
         }
 
-        if (cpu_skinning_rig)
+        if (cpu_skinning_rig && !native_vertex_declaration.posmtx.enable)
         {
           // If CPU skinned, we need to write our bone indexes to the posmtx spot
           // Similarly, we need to write our weight values to the weight spot
@@ -1070,6 +1070,8 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
 
           const auto& smoothed_influence = replacement_weights[vert_data->weight_id];
 
+          // If we have native bones (gpu skinned)
+          // don't override
           std::memcpy(vert_ptr + bone_offset, smoothed_influence.bone_ids.data(), sizeof(int) * 4);
           std::memcpy(vert_ptr + weight_offset, smoothed_influence.weights.data(),
                       sizeof(float) * 4);
