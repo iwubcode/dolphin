@@ -49,6 +49,17 @@ static void WriteVec3(u8* vert_ptr, u32 v3_offset, const Common::Vec3& v3_value)
   std::memcpy(vert_ptr + v3_offset + sizeof(float) * 2, &v3_value.z, sizeof(float));
 }
 
+/**
+ * @brief Solves for bone transforms using the weighted Kabsch algorithm (SVD).
+ *
+ * This function derives the best-fit rotation and translation for each bone by comparing
+ * the 'rest' positions (the bake state) to the 'native' positions (the game's current frame).
+ *
+ * @param original_positions The vertex positions at the time of the high-poly capture/bake.
+ * @param native_draw_data The current frame's emulated or native vertex data.
+ * @param out_bone_matrices Resulting Affine transforms (Rotation + Translation) per bone.
+ * @param out_bone_total_weights Cumulative confidence for each bone (used for fallback/blending).
+ */
 static void SolveChunkBoneTransforms(GraphicsModSystem::DrawCallID draw_call,
                                      const VideoCommon::SkinningRig& replacement_rig,
                                      const std::vector<Eigen::Vector3f>& original_positions,
@@ -194,15 +205,18 @@ static void ApplyLinearBlendedSkinning(
   }
 }
 
+/**
+ * @brief Validates the SVD result to prevent mesh "explosions."
+ *
+ * Returns false if the matrix contains NaNs (from zero-weight bones) or if the
+ * determinant isn't ~1.0 (indicating a non-orthogonal transform or failed convergence).
+ */
 static bool IsValidTransform(const Eigen::Affine3f& transform)
 {
-  // 1. Check for NaNs (happens if SVD fails to converge or has 0-weight input)
   if (transform.matrix().array().isNaN().any())
     return false;
 
-  // 2. Determinant Check (ensure it's a valid rotation, not a flat scale/reflection)
-  // A pure rotation matrix must have a determinant of ~1.0
-  float det = transform.linear().determinant();
+  const float det = transform.linear().determinant();
   if (std::abs(det - 1.0f) > 0.01f)
     return false;
 
