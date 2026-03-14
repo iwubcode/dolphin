@@ -147,6 +147,156 @@ bool heat_geodesics_precompute(const Eigen::MatrixXd& V, const Eigen::MatrixXi& 
 
 }  // namespace SimpleGeodesic
 
+// Post-process bone assignments to ensure contiguous regions
+void PostProcessBoneGroupsByConnectivity(std::vector<int>& assignments, const Eigen::MatrixXi& F,
+                                         int numVertices, int numBones)
+{
+  // Build adjacency
+  std::vector<std::vector<int>> adj(numVertices);
+  for (int i = 0; i < F.rows(); ++i)
+  {
+    for (int j = 0; j < 3; ++j)
+    {
+      int u = F(i, j);
+      int v = F(i, (j + 1) % 3);
+      adj[u].push_back(v);
+      adj[v].push_back(u);
+    }
+  }
+
+  // For each bone, find contiguous islands
+  std::vector<int> islandID(numVertices, -1);
+  std::vector<std::vector<int>> islands;
+  std::vector<int> islandBoneType;
+
+  std::vector<bool> visited(numVertices, false);
+  for (int i = 0; i < numVertices; ++i)
+  {
+    if (visited[i])
+      continue;
+
+    int currentBone = assignments[i];
+    std::vector<int> component;
+    std::queue<int> q;
+    q.push(i);
+    visited[i] = true;
+
+    while (!q.empty())
+    {
+      int u = q.front();
+      q.pop();
+      component.push_back(u);
+      islandID[u] = (int)islands.size();
+      for (int v : adj[u])
+      {
+        if (!visited[v] && assignments[v] == currentBone)
+        {
+          visited[v] = true;
+          q.push(v);
+        }
+      }
+    }
+    islandBoneType.push_back(currentBone);
+    islands.push_back(component);
+  }
+
+  // For each bone, keep only the largest contiguous island
+  std::vector<int> alphaIslandForBone(numBones, -1);
+  std::vector<size_t> maxSizes(numBones, 0);
+  for (std::size_t i = 0; i < islands.size(); i++)
+  {
+    int b = islandBoneType[i];
+    if (islands[i].size() > maxSizes[b])
+    {
+      maxSizes[b] = islands[i].size();
+      alphaIslandForBone[b] = i;
+    }
+  }
+
+  // Snap orphans: If you're not in your bone's alpha island, assign to neighbor's bone
+  for (int i = 0; i < numVertices; i++)
+  {
+    int myIsland = islandID[i];
+    int myBone = assignments[i];
+
+    if (myIsland != alphaIslandForBone[myBone])
+    {
+      // Find a neighbor in a main island
+      for (int neighbor : adj[i])
+      {
+        int nIsland = islandID[neighbor];
+        int nBone = assignments[neighbor];
+        if (nIsland == alphaIslandForBone[nBone])
+        {
+          assignments[i] = nBone;
+          break;
+        }
+      }
+    }
+  }
+}
+
+void MergeSmallAdjacentGroups(std::vector<int>& assignments, const Eigen::MatrixXi& F,
+                              const SimpleGeodesic::HeatGeodesicsData& heat_data, int numBones)
+{
+  // For each pair of bones, if they're adjacent and geodesic distance is low, merge
+  for (int b1 = 0; b1 < numBones; ++b1)
+  {
+    for (int b2 = b1 + 1; b2 < numBones; ++b2)
+    {
+      // Find adjacency
+      bool adjacent = false;
+      for (int i = 0; i < F.rows(); ++i)
+      {
+        for (int j = 0; j < 3; ++j)
+        {
+          int u = F(i, j);
+          int v = F(i, (j + 1) % 3);
+          if ((assignments[u] == b1 && assignments[v] == b2) ||
+              (assignments[u] == b2 && assignments[v] == b1))
+          {
+            adjacent = true;
+            break;
+          }
+        }
+        if (adjacent)
+          break;
+      }
+      if (!adjacent)
+        continue;
+
+      // Compute geodesic distance between groups
+      std::vector<int> group1, group2;
+      for (int i = 0; i < assignments.size(); ++i)
+      {
+        if (assignments[i] == b1)
+          group1.push_back(i);
+        if (assignments[i] == b2)
+          group2.push_back(i);
+      }
+      if (group1.empty() || group2.empty())
+        continue;
+
+      // Use heat_data to compute geodesic distance
+      Eigen::VectorXd rhs = Eigen::VectorXd::Zero(heat_data.V.rows());
+      for (int idx : group1)
+        rhs(idx) = 1.0;
+      Eigen::VectorXd geo = heat_data.heat_solver.solve(rhs);
+
+      double minDist = 1e9;
+      for (int idx : group2)
+        minDist = std::min(minDist, geo(idx));
+
+      // If geodesic distance is low, merge
+      if (minDist < 0.05)  // threshold: tweak as needed
+      {
+        for (int idx : group2)
+          assignments[idx] = b1;
+      }
+    }
+  }
+}
+
 /**
  * @brief Merges vertices within a 3D Euclidean distance (L2) of each other.
  * Unlike grid-based (L1) welders, this ensures diagonal gaps are bridged.
@@ -644,6 +794,116 @@ double CalculateSingleVertexSSE(int vIdx, const std::vector<Eigen::Matrix3Xd>& a
   return sse;
 }
 
+double FindNarrowestSplitAxis(const std::vector<int>& indices, const Eigen::Matrix3Xd& restPose)
+{
+  Eigen::Vector3d minB(1e9, 1e9, 1e9), maxB(-1e9, -1e9, -1e9);
+  for (int idx : indices)
+  {
+    Eigen::Vector3d p = restPose.col(idx);
+    minB = minB.cwiseMin(p);
+    maxB = maxB.cwiseMax(p);
+  }
+  Eigen::Vector3d span = maxB - minB;
+  if (span.x() < span.y() && span.x() < span.z())
+    return 0;
+  if (span.y() < span.x() && span.y() < span.z())
+    return 1;
+  return 2;
+}
+
+// --- Add frame importance calculation helper ---
+double ComputeFrameImportance(const Eigen::Matrix3Xd& pose, const Eigen::Matrix3Xd& restPose)
+{
+  // Use variance of motion as importance
+  double total = 0.0;
+  for (int i = 0; i < pose.cols(); ++i)
+    total += (pose.col(i) - restPose.col(i)).squaredNorm();
+  return std::sqrt(total / pose.cols());
+}
+
+// --- Hybrid split function: motion + geometry ---
+void rigid_split_raw_hybrid(const std::vector<Eigen::Matrix3Xd>& allPoses,
+                            const std::vector<int>& targetIndices, std::vector<int>& assignments,
+                            const Eigen::Matrix3Xd& restPose)
+{
+  // Weighted motion descriptor
+  const std::size_t N_sub = targetIndices.size();
+  const std::size_t K = allPoses.size();
+  Eigen::MatrixXd motion(N_sub, 3 * K);
+  std::vector<double> frame_weights(K);
+  for (std::size_t k = 0; k < K; ++k)
+    frame_weights[k] = ComputeFrameImportance(allPoses[k], restPose);
+
+  for (std::size_t i = 0; i < N_sub; ++i)
+  {
+    int vIdx = targetIndices[i];
+    for (std::size_t k = 0; k < K; ++k)
+      motion.row(i).segment<3>(k * 3) = frame_weights[k] * allPoses[k].col(vIdx);
+  }
+
+  // Standard motion clustering
+  int s1 = 0;
+  int s2 = -1;
+  double maxD = -1;
+  for (std::size_t i = 1; i < N_sub; ++i)
+  {
+    double d = (motion.row(i) - motion.row(s1)).squaredNorm();
+    if (d > maxD)
+    {
+      maxD = d;
+      s2 = static_cast<int>(i);
+    }
+  }
+  Eigen::RowVectorXd c1 = motion.row(s1);
+  Eigen::RowVectorXd c2 = motion.row(s2);
+
+  for (int iter = 0; iter < 15; ++iter)
+  {
+    std::vector<int> g1_local, g2_local;
+    for (std::size_t i = 0; i < N_sub; ++i)
+    {
+      double d1 = (motion.row(i) - c1).squaredNorm();
+      double d2 = (motion.row(i) - c2).squaredNorm();
+      int best_k = (d1 < d2) ? 0 : 1;
+      assignments[targetIndices[i]] = best_k;
+      if (best_k == 0)
+        g1_local.push_back(i);
+      else
+        g2_local.push_back(i);
+    }
+    if (g1_local.empty() || g2_local.empty())
+      break;
+    c1.setZero();
+    for (int idx : g1_local)
+      c1 += motion.row(idx);
+    c1 /= static_cast<double>(g1_local.size());
+    c2.setZero();
+    for (int idx : g2_local)
+      c2 += motion.row(idx);
+    c2 /= static_cast<double>(g2_local.size());
+  }
+
+  // Geometric bottleneck override
+  int axis = FindNarrowestSplitAxis(targetIndices, restPose);
+  double minA = 1e9, maxA = -1e9;
+  for (int idx : targetIndices)
+  {
+    double val = restPose(axis, idx);
+    minA = std::min(minA, val);
+    maxA = std::max(maxA, val);
+  }
+  double midA = (minA + maxA) / 2.0;
+  // If group is very narrow, force split at midpoint
+  if ((maxA - minA) < 0.15)  // threshold: tweak as needed
+  {
+    for (int idx : targetIndices)
+    {
+      double val = restPose(axis, idx);
+      assignments[idx] = (val < midA) ? 0 : 1;
+    }
+  }
+}
+
 void rigid_split_raw_geodesic(const std::vector<Eigen::Matrix3Xd>& allPoses,
                               const std::vector<int>& targetIndices, std::vector<int>& assignments,
                               const SimpleGeodesic::HeatGeodesicsData& heat_data,
@@ -905,7 +1165,7 @@ std::vector<int> CalculateVertexGroupsAdaptive(const std::vector<Eigen::Matrix3X
 
     // Perform the RAW motion split
     std::vector<int> sub_assignments(numVertices, -1);
-    rigid_split_raw(allPoses, groups[split_index].indices, sub_assignments);
+    rigid_split_raw_hybrid(allPoses, groups[split_index].indices, sub_assignments, restPose);
 
     std::vector<int> g1, g2;
     for (int vIdx : groups[split_index].indices)
@@ -1334,6 +1594,301 @@ void CleanBoneIslands(std::vector<int>& assignments, const Eigen::MatrixXi& F, i
       }
     }
   }
+}
+
+// Represents a frame's motion profile
+struct FrameSignature
+{
+  int frame_id;
+  Eigen::VectorXd signature;  // Flattened normalized displacements
+};
+
+/**
+ * Creates a normalized motion signature for every frame.
+ * We subtract the rest pose to isolate movement.
+ */
+std::vector<FrameSignature> GenerateMotionSignatures(const std::vector<Eigen::Matrix3Xd>& allPoses,
+                                                     const Eigen::Matrix3Xd& restPose)
+{
+  const int numFrames = allPoses.size();
+  const int numVerts = restPose.cols();
+  std::vector<FrameSignature> signatures(numFrames);
+
+  for (int f = 0; f < numFrames; ++f)
+  {
+    signatures[f].frame_id = f;
+
+    // 1. Calculate displacement from rest pose
+    Eigen::Matrix3Xd displacement = allPoses[f] - restPose;
+
+    // 2. Flatten to a 1D vector (3 * N)
+    Eigen::VectorXd flat = Eigen::Map<const Eigen::VectorXd>(displacement.data(), numVerts * 3);
+
+    // 3. Normalize: This ensures "subtle neck tilt" and "big run"
+    // are compared by WHERE the motion happens, not just how big it is.
+    double norm = flat.norm();
+    if (norm > 1e-8)
+    {
+      signatures[f].signature = flat / norm;
+    }
+    else
+    {
+      signatures[f].signature = Eigen::VectorXd::Zero(numVerts * 3);
+    }
+  }
+  return signatures;
+}
+
+/**
+ * Clusters frames based on a similarity threshold (0.0 to 1.0).
+ *
+ * @return A map where:
+ *   - Key (int): The Unique Bucket ID.
+ *   - Value (std::vector<int>): A list of Frame IDs that belong to this bucket.
+ *
+ * Example:
+ *   Bucket 0 might contain [0, 1, 2, 50, 51] (The "Thinking" idle)
+ *   Bucket 1 might contain [10, 11, 12, 13] (The "Run" cycle)
+ */
+std::map<int, std::vector<int>> AutoBucketizeFrames(const std::vector<FrameSignature>& signatures,
+                                                    double similarity_threshold = 0.9)
+{
+  // Key: Bucket Index, Value: List of Frame IDs
+  std::map<int, std::vector<int>> buckets;
+  if (signatures.empty())
+    return buckets;
+
+  // "Leaders" are the reference signatures that define what a bucket "looks" like.
+  std::vector<Eigen::VectorXd> leader_signatures;
+
+  for (const auto& sig : signatures)
+  {
+    bool assigned = false;
+
+    for (size_t l = 0; l < leader_signatures.size(); ++l)
+    {
+      // Since signatures are normalized, the Dot Product is the Cosine Similarity.
+      // 1.0 = Perfect match, 0.0 = Completely different motion.
+      double similarity = sig.signature.dot(leader_signatures[l]);
+
+      if (similarity > similarity_threshold)
+      {
+        buckets[static_cast<int>(l)].push_back(sig.frame_id);
+        assigned = true;
+        break;
+      }
+    }
+
+    if (!assigned)
+    {
+      // No existing bucket matches this motion. Start a new one!
+      int new_id = static_cast<int>(leader_signatures.size());
+      leader_signatures.push_back(sig.signature);
+      buckets[new_id].push_back(sig.frame_id);
+    }
+  }
+  return buckets;
+}
+
+/**
+ * Executes the splitting logic independently for each motion bucket.
+ * This isolates subtle movements (like head tilts) from loud movements (like running).
+ */
+std::map<int, std::vector<int>>
+GenerateBucketProposals(const std::map<int, std::vector<int>>& frame_buckets,
+                        const std::vector<Eigen::Matrix3Xd>& allPoses,
+                        const Eigen::Matrix3Xd& restPose, const SimpleGeodesic::HeatGeodesicsData&)
+{
+  std::map<int, std::vector<int>> proposals;
+
+  for (auto const& [bucket_id, frame_ids] : frame_buckets)
+  {
+    // 1. Extract only the frames belonging to this specific motion type
+    std::vector<Eigen::Matrix3Xd> bucket_poses;
+    for (int f_id : frame_ids)
+    {
+      bucket_poses.push_back(allPoses[f_id]);
+    }
+
+    // 2. Run the Adaptive Splitter on this subset.
+    // We use a tighter tolerance because the "noise" of other animations is gone.
+    const double bucket_tolerance = 0.005;
+    proposals[bucket_id] = CalculateVertexGroupsAdaptive(bucket_poses, restPose, bucket_tolerance);
+
+    INFO_LOG_FMT(VIDEO, "Bucket {}: Produced {} unique motion clusters for {} frames.", bucket_id,
+                 bucket_poses.size(), frame_ids.size());
+  }
+  return proposals;
+}
+
+/**
+ * Merges multiple animation-specific bone proposals into a single global bone map.
+ *
+ * Logic: Every vertex gets a "Signature" based on its bone ID in every bucket.
+ * If two vertices have the exact same signature, they are the same bone.
+ * If they differ in even ONE bucket, they are split into separate bones.
+ *
+ * @return A vector of final bone assignments (one per vertex).
+ */
+std::vector<int> FinalMergeProposals(int numVertices,
+                                     const std::map<int, std::vector<int>>& bucket_proposals)
+{
+  // Map of "Motion Signature" -> "New Unique Bone ID"
+  std::map<std::string, int> signature_to_final_id;
+  std::vector<int> final_assignments(numVertices);
+  int next_bone_id = 0;
+
+  for (int i = 0; i < numVertices; ++i)
+  {
+    // Build the signature. The map iteration order (bucket_id 0, 1, 2...)
+    // ensures consistency across all vertices.
+    std::string signature = "";
+    for (auto const& [bucket_id, assignments] : bucket_proposals)
+    {
+      signature += std::to_string(assignments[i]) + "|";
+    }
+
+    // If this specific combination of motions hasn't been seen, register it.
+    if (signature_to_final_id.find(signature) == signature_to_final_id.end())
+    {
+      signature_to_final_id[signature] = next_bone_id++;
+    }
+
+    final_assignments[i] = signature_to_final_id[signature];
+  }
+
+  INFO_LOG_FMT(VIDEO, "Merging complete. Discovered {} total bones across all animation buckets.",
+               next_bone_id);
+  return final_assignments;
+}
+
+/**
+ * Reduces the bone count by merging bones that exhibit nearly identical
+ * rigid motion across ALL frames.
+ */
+std::vector<int>
+PruneAndMergeBones(const std::vector<int>& initial_assignments,
+                   const std::vector<Eigen::Matrix3Xd>& allPoses, const Eigen::Matrix3Xd& restPose,
+                   double merge_threshold = 0.001)  // Adjust based on how "strict" you want to be
+{
+  int numVertices = initial_assignments.size();
+  int numBones = 0;
+  for (int b : initial_assignments)
+    numBones = std::max(numBones, b + 1);
+
+  // 1. Group indices by bone
+  std::vector<std::vector<int>> bone_to_indices(numBones);
+  for (int i = 0; i < numVertices; ++i)
+  {
+    bone_to_indices[initial_assignments[i]].push_back(i);
+  }
+
+  // 2. Map to keep track of which bones have been merged
+  std::vector<int> bone_remap(numBones);
+  std::iota(bone_remap.begin(), bone_remap.end(), 0);
+
+  // 3. Compare pairs of bones
+  // Note: We only compare bones that are topologically ADJACENT to keep it fast
+  // (You can use your existing adjacency logic here, or just compare all pairs for < 100 bones)
+  for (int a = 0; a < numBones; ++a)
+  {
+    if (bone_to_indices[a].empty())
+      continue;
+
+    for (int b = a + 1; b < numBones; ++b)
+    {
+      if (bone_to_indices[b].empty())
+        continue;
+
+      // COMBINED SSE: If we treated both groups as ONE bone, what is the error?
+      std::vector<int> combined = bone_to_indices[a];
+      combined.insert(combined.end(), bone_to_indices[b].begin(), bone_to_indices[b].end());
+
+      double error_a = CalculateRigidSSE_WorldSpace(bone_to_indices[a], allPoses, restPose);
+      double error_b = CalculateRigidSSE_WorldSpace(bone_to_indices[b], allPoses, restPose);
+      double error_combined = CalculateRigidSSE_WorldSpace(combined, allPoses, restPose);
+
+      // If the "cost" of merging them is negligible, they are the same functional unit.
+      double merge_cost = error_combined - (error_a + error_b);
+
+      if (merge_cost < merge_threshold)
+      {
+        INFO_LOG_FMT(VIDEO, "Merging bone {} into {}. Cost: {}", b, a, merge_cost);
+        bone_remap[b] = a;
+        // Move indices to 'a' and clear 'b'
+        bone_to_indices[a].insert(bone_to_indices[a].end(), bone_to_indices[b].begin(),
+                                  bone_to_indices[b].end());
+        bone_to_indices[b].clear();
+      }
+    }
+  }
+
+  // 4. Final Pass: Re-index to remove gaps
+  std::vector<int> final_assignments(numVertices);
+  std::map<int, int> compact_map;
+  int next_id = 0;
+
+  for (int i = 0; i < numVertices; ++i)
+  {
+    int root_bone = bone_remap[initial_assignments[i]];
+    // Find the "ultimate" parent if we had multiple merges
+    while (bone_remap[root_bone] != root_bone)
+      root_bone = bone_remap[root_bone];
+
+    if (compact_map.find(root_bone) == compact_map.end())
+    {
+      compact_map[root_bone] = next_id++;
+    }
+    final_assignments[i] = compact_map[root_bone];
+  }
+
+  return final_assignments;
+}
+
+/**
+ * The high-level orchestrator for the new bucket-driven rigging system.
+ */
+std::vector<int> GenerateRigFromMotion(const std::vector<Eigen::Matrix3Xd>& allPoses,
+                                       const Eigen::Matrix3Xd& restPose,
+                                       const SimpleGeodesic::HeatGeodesicsData& heat_data)
+{
+  // 1. PHASE ONE: Signature Generation
+  // Normalizes all frames so subtle motions (breathing) match the intensity of loud ones
+  // (punching).
+  auto signatures = GenerateMotionSignatures(allPoses, restPose);
+
+  // 2. PHASE TWO: Auto-Bucketization
+  // Discovers how many "distinct" animations are in the capture (Ninja flips, thinking, etc).
+  // Similarity of 0.9 is a good "high sensitivity" start.
+  auto frame_buckets = AutoBucketizeFrames(signatures, 0.9);
+  INFO_LOG_FMT(VIDEO, "Detected {} distinct motion buckets.", frame_buckets.size());
+
+  // 3. PHASE THREE: Independent Proposals
+  // Each bucket proposes its own internal bones based ONLY on its local motion.
+  // This is where the Neck finally gets its own bone because the "Idle" bucket sees it.
+  auto proposals = GenerateBucketProposals(frame_buckets, allPoses, restPose, heat_data);
+
+  // 4. PHASE FOUR: The "Union" Merge
+  // Combines all bucket proposals into a high-resolution "Signature Map".
+  // This will likely over-segment (e.g., 80 bones), but it won't MISS any joints.
+  auto raw_assignments = FinalMergeProposals(restPose.cols(), proposals);
+
+  // 5. PHASE FIVE: SSE Pruning (The Skeptic)
+  // Collapses "mathematical noise" bones back together if they move identically across ALL frames.
+  // This is your safety net against "patchy" micro-bones.
+  double pruning_tolerance = 0.0005;  // Tight tolerance to keep the neck!
+  auto pruned_assignments =
+      PruneAndMergeBones(raw_assignments, allPoses, restPose, pruning_tolerance);
+
+  // 6. PHASE SIX: Final Sanitization
+  // Use your existing BFS "Island Cleaner" to ensure bones are contiguous.
+  int final_bone_count = 0;
+  for (int b : pruned_assignments)
+    final_bone_count = std::max(final_bone_count, b + 1);
+
+  CleanBoneIslands(pruned_assignments, heat_data.F, restPose.cols(), final_bone_count);
+
+  return pruned_assignments;
 }
 
 /**
@@ -2030,9 +2585,8 @@ void VertexGroupDumper::Save()
    * Note: If your mesh isn't scaled to 1.0, this value must be multiplied
    * by (scale^2) to remain effective.
    */
-  const double tolerance = 0.005;
-  auto clean_grouping =
-      CalculateVertexGroupsAdaptive(reassembled_data, reassembled_data[0], tolerance);
+  // const double tolerance = 0.005;
+  auto clean_grouping = GenerateRigFromMotion(reassembled_data, reassembled_data[0], heat_data);
 
   int bone_count = 0;
   for (int id : clean_grouping)
@@ -2040,7 +2594,7 @@ void VertexGroupDumper::Save()
     bone_count = std::max(bone_count, id + 1);
   }
 
-  {
+  /*{
     const std::string path_prefix =
         File::GetUserPath(D_DUMP_IDX) + SConfig::GetInstance().GetGameID();
 
@@ -2062,7 +2616,7 @@ void VertexGroupDumper::Save()
                  bone_centers, influences);
   }
 
-  CleanBoneIslands(clean_grouping, SF, reassembled_data[0].cols(), bone_count);
+  CleanBoneIslands(clean_grouping, SF, reassembled_data[0].cols(), bone_count);*/
 
   const std::string path_prefix =
       File::GetUserPath(D_DUMP_IDX) + SConfig::GetInstance().GetGameID();
