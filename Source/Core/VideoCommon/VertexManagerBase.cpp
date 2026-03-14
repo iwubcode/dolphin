@@ -1384,7 +1384,8 @@ void VertexManagerBase::DrawCustomMesh(GraphicsModSystem::DrawCallID draw_call,
 
         u32 base_vertex, base_index;
 
-        if (!cpu_skinning_rig)
+        if (!cpu_skinning_rig ||
+            mesh_chunk.GetNativeVertexFormat()->GetVertexDeclaration().posmtx.enable)
         {
           UploadUtilityVertices(vertex_data.data(), mesh_chunk.GetVertexStride(),
                                 static_cast<u32>(vertex_data.size()), index_data.data(),
