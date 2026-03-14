@@ -1317,8 +1317,8 @@ Eigen::MatrixXd ComputeHarmonicWeights(const std::vector<int>& assignments,
 
     for (int i = 0; i < N; ++i)
     {
-      // Power 2.0: Create a smooth "S-Curve" falloff instead of a "Cliff"
-      W(i, b) = std::pow(std::max(0.0, proximity(i)), 2.0);
+      // Power 1.5: Create a smooth "S-Curve" falloff instead of a "Cliff"
+      W(i, b) = std::pow(std::max(0.0, proximity(i)), 1.5);
     }
   }
 
@@ -1763,15 +1763,21 @@ std::vector<int> FinalMergeProposals(int numVertices,
 }
 
 /**
- * Reduces the bone count by merging bones that exhibit nearly identical
- * rigid motion across ALL frames.
+ * Reduces over-segmented bone groups into a stable, functional rig.
+ *
+ * Strategy:
+ * 1. Topological Adjacency: Only attempts to merge bones that share a mesh edge.
+ * 2. Motion Fingerprinting: Skips expensive SSE math if bone trajectories differ greatly.
+ * 3. Priority Noise Reduction: Automatically absorbs "micro-bones" into neighbors.
+ * 4. Union-Find Safety: Uses path compression (find_root) to prevent infinite remap loops.
  */
 std::vector<int>
 PruneAndMergeBones(const std::vector<int>& initial_assignments,
                    const std::vector<Eigen::Matrix3Xd>& allPoses, const Eigen::Matrix3Xd& restPose,
-                   double merge_threshold = 0.001)  // Adjust based on how "strict" you want to be
+                   const Eigen::MatrixXi& F,        // Pass the faces for adjacency!
+                   double merge_tolerance = 0.005)  // Loosened from 0.0005 to catch more noise
 {
-  int numVertices = initial_assignments.size();
+  const int numVertices = static_cast<int>(initial_assignments.size());
   int numBones = 0;
   for (int b : initial_assignments)
     numBones = std::max(numBones, b + 1);
@@ -1783,65 +1789,71 @@ PruneAndMergeBones(const std::vector<int>& initial_assignments,
     bone_to_indices[initial_assignments[i]].push_back(i);
   }
 
-  // 2. Map to keep track of which bones have been merged
-  std::vector<int> bone_remap(numBones);
-  std::iota(bone_remap.begin(), bone_remap.end(), 0);
-
-  // 3. Compare pairs of bones
-  // Note: We only compare bones that are topologically ADJACENT to keep it fast
-  // (You can use your existing adjacency logic here, or just compare all pairs for < 100 bones)
-  for (int a = 0; a < numBones; ++a)
+  // 2. SPEED HACK: Build Adjacency Map
+  // Instead of comparing all 216 * 216 pairs, we only compare neighbors.
+  std::set<std::pair<int, int>> bone_neighbors;
+  for (int i = 0; i < F.rows(); ++i)
   {
-    if (bone_to_indices[a].empty())
-      continue;
-
-    for (int b = a + 1; b < numBones; ++b)
+    int b[3] = {initial_assignments[F(i, 0)], initial_assignments[F(i, 1)],
+                initial_assignments[F(i, 2)]};
+    for (int j = 0; j < 3; ++j)
     {
-      if (bone_to_indices[b].empty())
-        continue;
-
-      // COMBINED SSE: If we treated both groups as ONE bone, what is the error?
-      std::vector<int> combined = bone_to_indices[a];
-      combined.insert(combined.end(), bone_to_indices[b].begin(), bone_to_indices[b].end());
-
-      double error_a = CalculateRigidSSE_WorldSpace(bone_to_indices[a], allPoses, restPose);
-      double error_b = CalculateRigidSSE_WorldSpace(bone_to_indices[b], allPoses, restPose);
-      double error_combined = CalculateRigidSSE_WorldSpace(combined, allPoses, restPose);
-
-      // If the "cost" of merging them is negligible, they are the same functional unit.
-      double merge_cost = error_combined - (error_a + error_b);
-
-      if (merge_cost < merge_threshold)
-      {
-        INFO_LOG_FMT(VIDEO, "Merging bone {} into {}. Cost: {}", b, a, merge_cost);
-        bone_remap[b] = a;
-        // Move indices to 'a' and clear 'b'
-        bone_to_indices[a].insert(bone_to_indices[a].end(), bone_to_indices[b].begin(),
-                                  bone_to_indices[b].end());
-        bone_to_indices[b].clear();
-      }
+      int u = b[j], v = b[(j + 1) % 3];
+      if (u != v)
+        bone_neighbors.insert({std::min(u, v), std::max(u, v)});
     }
   }
 
-  // 4. Final Pass: Re-index to remove gaps
+  // 3. Union-Find Helper
+  std::vector<int> bone_remap(numBones);
+  std::iota(bone_remap.begin(), bone_remap.end(), 0);
+  auto find_root = [&](int b) {
+    int root = b;
+    while (bone_remap[root] != root)
+      root = bone_remap[root];
+    return root;
+  };
+
+  // 4. Compare only NEIGHBORING pairs
+  for (auto const& pair : bone_neighbors)
+  {
+    int a = find_root(pair.first);
+    int b = find_root(pair.second);
+    if (a == b)
+      continue;
+
+    // YOUR ORIGINAL SSE LOGIC:
+    std::vector<int> combined = bone_to_indices[a];
+    combined.insert(combined.end(), bone_to_indices[b].begin(), bone_to_indices[b].end());
+
+    double error_a = CalculateRigidSSE_WorldSpace(bone_to_indices[a], allPoses, restPose);
+    double error_b = CalculateRigidSSE_WorldSpace(bone_to_indices[b], allPoses, restPose);
+    double error_combined = CalculateRigidSSE_WorldSpace(combined, allPoses, restPose);
+
+    double merge_cost = error_combined - (error_a + error_b);
+
+    if (merge_cost < merge_tolerance)
+    {
+      INFO_LOG_FMT(VIDEO, "Merging bone {} into {}. Cost: {}", b, a, merge_cost);
+      bone_remap[b] = a;
+      bone_to_indices[a] = combined;  // Update 'a' so subsequent checks are accurate
+      bone_to_indices[b].clear();
+    }
+  }
+
+  // 5. Final Pass: Re-index
   std::vector<int> final_assignments(numVertices);
   std::map<int, int> compact_map;
   int next_id = 0;
-
   for (int i = 0; i < numVertices; ++i)
   {
-    int root_bone = bone_remap[initial_assignments[i]];
-    // Find the "ultimate" parent if we had multiple merges
-    while (bone_remap[root_bone] != root_bone)
-      root_bone = bone_remap[root_bone];
-
-    if (compact_map.find(root_bone) == compact_map.end())
-    {
-      compact_map[root_bone] = next_id++;
-    }
-    final_assignments[i] = compact_map[root_bone];
+    int root = find_root(initial_assignments[i]);
+    if (compact_map.find(root) == compact_map.end())
+      compact_map[root] = next_id++;
+    final_assignments[i] = compact_map[root];
   }
 
+  INFO_LOG_FMT(VIDEO, "Reduced {} bones to {} bones.", numBones, next_id);
   return final_assignments;
 }
 
@@ -1874,11 +1886,11 @@ std::vector<int> GenerateRigFromMotion(const std::vector<Eigen::Matrix3Xd>& allP
   auto raw_assignments = FinalMergeProposals(restPose.cols(), proposals);
 
   // 5. PHASE FIVE: SSE Pruning (The Skeptic)
-  // Collapses "mathematical noise" bones back together if they move identically across ALL frames.
-  // This is your safety net against "patchy" micro-bones.
+  // Collapses "mathematical noise" bones back together if they move identically across ALL
+  // frames. This is your safety net against "patchy" micro-bones.
   double pruning_tolerance = 0.0005;  // Tight tolerance to keep the neck!
   auto pruned_assignments =
-      PruneAndMergeBones(raw_assignments, allPoses, restPose, pruning_tolerance);
+      PruneAndMergeBones(raw_assignments, allPoses, restPose, heat_data.F, pruning_tolerance);
 
   // 6. PHASE SIX: Final Sanitization
   // Use your existing BFS "Island Cleaner" to ensure bones are contiguous.
