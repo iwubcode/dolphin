@@ -131,6 +131,15 @@ bool heat_geodesics_precompute(const Eigen::MatrixXd& V, const Eigen::MatrixXi& 
   rhs(center_v) = 1.0;
   data.geo_from_center = data.heat_solver.solve(rhs);
 
+  // Normalize geo_from_center to a stable [0,1] range to prevent scale domination
+  {
+    double minv = data.geo_from_center.minCoeff();
+    data.geo_from_center.array() -= minv;
+    double maxv = data.geo_from_center.maxCoeff();
+    if (maxv > 1e-12)
+      data.geo_from_center /= maxv;
+  }
+
   data.L = L;
   data.M = M;
   return data.heat_solver.info() == Eigen::Success;
@@ -635,138 +644,6 @@ double CalculateSingleVertexSSE(int vIdx, const std::vector<Eigen::Matrix3Xd>& a
   return sse;
 }
 
-/*void rigid_split_raw_geodesic(const std::vector<Eigen::Matrix3Xd>& allPoses,
-                              const std::vector<int>& targetIndices, std::vector<int>& assignments,
-                              const SimpleGeodesic::HeatGeodesicsData& heat_data,
-                              bool force_topological)
-{
-  const std::size_t N_sub = targetIndices.size();
-  const std::size_t K = allPoses.size();
-
-  // 1. Build Motion Space
-  Eigen::MatrixXd motion(N_sub, 3 * K);
-  for (std::size_t i = 0; i < N_sub; ++i)
-  {
-    int vIdx = targetIndices[i];
-    for (std::size_t k = 0; k < K; ++k)
-    {
-      motion.row(i).segment<3>(k * 3) = allPoses[k].col(vIdx);
-    }
-  }
-
-  // 2. SEED 1: Find the most "Active" vertex in this group
-  int s1 = 0;
-  int s2 = -1;
-  if (force_topological)
-  {
-    // Seed 1: Extreme A (Furthest from a random point)
-    Eigen::VectorXd rhs_rand = Eigen::VectorXd::Zero(heat_data.V.rows());
-    rhs_rand(targetIndices[0]) = 1.0;
-    Eigen::VectorXd geo_rand = heat_data.heat_solver.solve(rhs_rand);
-
-    int extremeA = 0;
-    double maxD = -1.0;
-    for (int i : targetIndices)
-      if (1.0 - geo_rand(i) > maxD)
-      {
-        maxD = 1.0 - geo_rand(i);
-        extremeA = i;
-      }
-
-    // Seed 2: Extreme B (Furthest from Extreme A)
-    Eigen::VectorXd rhsA = Eigen::VectorXd::Zero(heat_data.V.rows());
-    rhsA(extremeA) = 1.0;
-    Eigen::VectorXd geoA = heat_data.heat_solver.solve(rhsA);
-
-    int extremeB = 0;
-    maxD = -1.0;
-    for (int i : targetIndices)
-      if (1.0 - geoA(i) > maxD)
-      {
-        maxD = 1.0 - geoA(i);
-        extremeB = i;
-      }
-
-    s1 = -1;
-    s2 = -1;
-    for (int i = 0; i < N_sub; ++i)
-    {
-      if (targetIndices[i] == extremeA)
-        s1 = i;
-      if (targetIndices[i] == extremeB)
-        s2 = i;
-    }
-  }
-
-  // 3. SEED 2: Find the vertex GEODESICALLY FURTHEST from Seed 1
-  // We use the Heat Solver to find surface distance
-  Eigen::VectorXd rhs1 = Eigen::VectorXd::Zero(heat_data.V.rows());
-  rhs1(targetIndices[s1]) = 1.0;
-  Eigen::VectorXd geo1 = heat_data.heat_solver.solve(rhs1);
-
-  double minHeat = 2.0;  // Heat values are 0-1, so 2.0 is a safe max
-  for (std::size_t i = 0; i < N_sub; ++i)
-  {
-    double h = geo1(targetIndices[i]);
-    // The "furthest" vertex has the LOWEST heat value
-    if (h < minHeat)
-    {
-      minHeat = h;
-      s2 = static_cast<int>(i);
-    }
-  }
-
-  // Fallback if Seed selection fails
-  if (s2 == -1)
-    s2 = (s1 + 1) % N_sub;
-
-  // 4. Hybrid K-Means Iterations
-  Eigen::RowVectorXd c1 = motion.row(s1);
-  Eigen::RowVectorXd c2 = motion.row(s2);
-
-  // We also need geodesic distance from Seed 2
-  Eigen::VectorXd rhs2 = Eigen::VectorXd::Zero(heat_data.V.rows());
-  rhs2(targetIndices[s2]) = 1.0;
-  Eigen::VectorXd geo2 = heat_data.heat_solver.solve(rhs2);
-
-  for (int iter = 0; iter < 10; ++iter)
-  {
-    std::vector<int> g1_local, g2_local;
-
-    for (std::size_t i = 0; i < N_sub; ++i)
-    {
-      int globalIdx = targetIndices[i];
-      double d1_m = (motion.row(i) - c1).squaredNorm();
-      double d2_m = (motion.row(i) - c2).squaredNorm();
-
-      // HYBRID COST: If motion is similar, favor the Geodesically closer seed
-      // (geo is 'Heat', so high heat = low distance)
-      double cost1 = d1_m / (geo1(globalIdx) + 1e-6);
-      double cost2 = d2_m / (geo2(globalIdx) + 1e-6);
-
-      int best_k = (cost1 < cost2) ? 0 : 1;
-      assignments[globalIdx] = best_k;
-      if (best_k == 0)
-        g1_local.push_back(i);
-      else
-        g2_local.push_back(i);
-    }
-
-    if (g1_local.empty() || g2_local.empty())
-      break;
-
-    // Update Motion Centers
-    c1.setZero();
-    for (int idx : g1_local)
-      c1 += motion.row(idx);
-    c1 /= g1_local.size();
-    c2.setZero();
-    for (int idx : g2_local)
-      c2 += motion.row(idx);
-    c2 /= g2_local.size();
-  }
-}*/
-
 void rigid_split_raw_geodesic(const std::vector<Eigen::Matrix3Xd>& allPoses,
                               const std::vector<int>& targetIndices, std::vector<int>& assignments,
                               const SimpleGeodesic::HeatGeodesicsData& heat_data,
@@ -841,6 +718,16 @@ void rigid_split_raw_geodesic(const std::vector<Eigen::Matrix3Xd>& allPoses,
     Eigen::VectorXd rhs1 = Eigen::VectorXd::Zero(heat_data.V.rows());
     rhs1(targetIndices[s1]) = 1.0;
     Eigen::VectorXd geo1 = heat_data.heat_solver.solve(rhs1);
+
+    // Normalize geo1 to [0,1]
+    {
+      double minv = geo1.minCoeff();
+      geo1.array() -= minv;
+      double maxv = geo1.maxCoeff();
+      if (maxv > 1e-12)
+        geo1 /= maxv;
+    }
+
     double minHeat = 2.0;
     for (std::size_t i = 0; i < N_sub; ++i)
     {
@@ -860,6 +747,21 @@ void rigid_split_raw_geodesic(const std::vector<Eigen::Matrix3Xd>& allPoses,
   Eigen::VectorXd rhs2 = Eigen::VectorXd::Zero(heat_data.V.rows());
   rhs2(targetIndices[s2]) = 1.0;
   Eigen::VectorXd geo2 = heat_data.heat_solver.solve(rhs2);
+
+  // Normalize geodesic fields to [0,1] to keep them comparable to motion costs
+  {
+    double min1 = geo1.minCoeff();
+    geo1.array() -= min1;
+    double max1 = geo1.maxCoeff();
+    if (max1 > 1e-12)
+      geo1 /= max1;
+
+    double min2 = geo2.minCoeff();
+    geo2.array() -= min2;
+    double max2 = geo2.maxCoeff();
+    if (max2 > 1e-12)
+      geo2 /= max2;
+  }
 
   Eigen::RowVectorXd c1 = motion.row(s1);
   Eigen::RowVectorXd c2 = motion.row(s2);
@@ -915,16 +817,13 @@ double CalculateGroupGeodesicDiameter(const std::vector<int>& indices,
   if (indices.size() < 10)
     return 0.0;
 
-  // Fix: Use a loop to set the RHS values
   Eigen::VectorXd rhs = Eigen::VectorXd::Zero(heat_data.V.rows());
   for (int idx : indices)
-  {
     rhs(idx) = 1.0;
-  }
 
-  // Solve heat from the group's "Hard Assigned" region
   Eigen::VectorXd geo = heat_data.heat_solver.solve(rhs);
 
+  // Do NOT normalize geo globally to [0,1]
   double max_h = -1e9;
   double min_h = 1e9;
   for (int idx : indices)
@@ -935,10 +834,23 @@ double CalculateGroupGeodesicDiameter(const std::vector<int>& indices,
     if (h < min_h)
       min_h = h;
   }
-
-  // The span is the difference in "heat" across the group.
-  // 1.0 (at seed) - 0.0 (far away) = 1.0 span.
   return std::max(0.0, max_h - min_h);
+}
+
+bool AreGroupsPhysicallyAdjacent(const std::vector<int>& g1, const std::vector<int>& g2,
+                                 const Eigen::MatrixXi& F)
+{
+  std::set<int> g1_set(g1.begin(), g1.end());
+  std::set<int> g2_set(g2.begin(), g2.end());
+  for (int i = 0; i < F.rows(); ++i)
+  {
+    int a = F(i, 0), b = F(i, 1), c = F(i, 2);
+    if ((g1_set.count(a) && g2_set.count(b)) || (g1_set.count(b) && g2_set.count(a)) ||
+        (g1_set.count(a) && g2_set.count(c)) || (g1_set.count(c) && g2_set.count(a)) ||
+        (g1_set.count(b) && g2_set.count(c)) || (g1_set.count(c) && g2_set.count(b)))
+      return true;
+  }
+  return false;
 }
 
 /**
@@ -953,8 +865,7 @@ double CalculateGroupGeodesicDiameter(const std::vector<int>& indices,
  * @return A flat array of Bone IDs for every vertex in the mesh.
  */
 std::vector<int> CalculateVertexGroupsAdaptive(const std::vector<Eigen::Matrix3Xd>& allPoses,
-                                               const Eigen::Matrix3Xd& restPose, double tolerance,
-                                               const SimpleGeodesic::HeatGeodesicsData& heat_data)
+                                               const Eigen::Matrix3Xd& restPose, double tolerance)
 {
   const int numVertices = restPose.cols();
   std::vector<int> allIndices(numVertices);
@@ -969,31 +880,22 @@ std::vector<int> CalculateVertexGroupsAdaptive(const std::vector<Eigen::Matrix3X
   std::vector<BoneGroup> groups = {{allIndices, false}};
   const int MAX_BONES = 50;
 
+  const double totalInitialSSE = CalculateRigidSSE_WorldSpace(allIndices, allPoses, restPose);
+
   while (groups.size() < MAX_BONES)
   {
     int split_index = -1;
-    double max_metric = -1;
+    double maxSSE = -1;
 
-    // 1. SELECTION: Which group is the "most" in need of a split?
+    // Find worst group that isn't already "done"
     for (std::size_t i = 0; i < groups.size(); ++i)
     {
       if (groups[i].skip_split)
         continue;
-
       double sse = CalculateRigidSSE_WorldSpace(groups[i].indices, allPoses, restPose);
-
-      // Use your existing function to find the 'Physical Length'
-      double geo_span = CalculateGroupGeodesicDiameter(groups[i].indices, heat_data);
-
-      // ANATOMICAL BIAS:
-      // If we have < 15 bones, we multiply SSE by 100x the physical length.
-      // This forces the "Spine-to-Head" to be split way before a "Flickering Finger".
-      double anatomy_weight = (groups.size() < 15) ? 100.0 : 5.0;
-      double metric = sse * (1.0 + geo_span * anatomy_weight);
-
-      if (metric > tolerance && metric > max_metric)
+      if (sse > tolerance && sse > maxSSE)
       {
-        max_metric = metric;
+        maxSSE = sse;
         split_index = static_cast<int>(i);
       }
     }
@@ -1001,12 +903,9 @@ std::vector<int> CalculateVertexGroupsAdaptive(const std::vector<Eigen::Matrix3X
     if (split_index == -1)
       break;
 
-    // 2. TRIAL SPLIT
-    // We force "Topological" seeding for the first 8 bones to build the main skeleton.
-    bool force_topo = (groups.size() < 8);
+    // Perform the RAW motion split
     std::vector<int> sub_assignments(numVertices, -1);
-    rigid_split_raw_geodesic(allPoses, groups[split_index].indices, sub_assignments, heat_data,
-                             force_topo);
+    rigid_split_raw(allPoses, groups[split_index].indices, sub_assignments);
 
     std::vector<int> g1, g2;
     for (int vIdx : groups[split_index].indices)
@@ -1023,67 +922,56 @@ std::vector<int> CalculateVertexGroupsAdaptive(const std::vector<Eigen::Matrix3X
       continue;
     }
 
-    // 3. THE GATES
+    // IMPROVEMENT GATE (Using SSE for mathematical fairness)
+    // Calculate total error
     const double parentSSE =
         CalculateRigidSSE_WorldSpace(groups[split_index].indices, allPoses, restPose);
-    const double combinedChildSSE = CalculateRigidSSE_WorldSpace(g1, allPoses, restPose) +
-                                    CalculateRigidSSE_WorldSpace(g2, allPoses, restPose);
+    const double child1SSE = CalculateRigidSSE_WorldSpace(g1, allPoses, restPose);
+    const double child2SSE = CalculateRigidSSE_WorldSpace(g2, allPoses, restPose);
+    const double combinedChildSSE = child1SSE + child2SSE;
+
+    double improvementFactor = combinedChildSSE / parentSSE;
+
+    WARN_LOG_FMT(
+        VIDEO,
+        "Step: {} | Parent size: {} | Child 1 size: {} | Child 2 size: {}, Improvement Factor: {}, "
+        "Active "
+        "groups: {}, Parent SSE: {} | Child 1 SSE: {} | Child 2 SSE: {} | Combined SSE: {}",
+        groups.size(), groups[split_index].indices.size(), g1.size(), g2.size(), improvementFactor,
+        std::count_if(groups.begin(), groups.end(), [](auto& g) { return !g.skip_split; }),
+        parentSSE, child1SSE, child2SSE, combinedChildSSE);
+
     const double improvement = parentSSE - combinedChildSSE;
 
-    const double groupLength =
-        CalculateGroupGeodesicDiameter(groups[split_index].indices, heat_data);
-
-    ERROR_LOG_FMT(
-        VIDEO,
-        "Step: {} | Parent size: {} | Child 1 size: {} | Child 2 size: {}, Improvement Factor: "
-        "{}, "
-        "Active "
-        "groups: {}, Parent SSE: {} | Combined SSE: {} | Group Length: {}",
-        groups.size(), groups[split_index].indices.size(), g1.size(), g2.size(), improvement,
-        std::count_if(groups.begin(), groups.end(), [](auto& g) { return !g.skip_split; }),
-        parentSSE, combinedChildSSE, groupLength);
-
-    double requiredFactor = 0.05;  // Standard
-
-    if (groupLength > 0.15)  // Was 0.4 - Catch shorter spans like necks/wrists
+    // GATE A: The "Significant Contribution" Check
+    // If the improvement is less than 0.01% of the total mesh error, it's not worth a new bone.
+    if (improvement < (totalInitialSSE * 0.0001))
     {
-      requiredFactor = 0.01;
-    }
-    else if (groups.size() < 35)  // Was 30
-    {
-      requiredFactor = 0.02;  // Was 0.10 - Be VERY sensitive for the main skeleton
-    }
-
-    const bool isMassiveGroup = (groups[split_index].indices.size() > (numVertices * 0.10));
-
-    if (improvement / (parentSSE + 1e-9) < requiredFactor && !isMassiveGroup)
-    {
-      WARN_LOG_FMT(
-          VIDEO,
-          "Skipping parent group due to improvement less than required, actual improvement "
-          "{}, parentSSE {}, requiredFactor {}",
-          improvement, parentSSE, requiredFactor);
+      WARN_LOG_FMT(VIDEO,
+                   "Skipping parent group due to no significant contribution, actual improvement "
+                   "{}, totalInitialSSE {}, minimum improvement required {}",
+                   improvement, totalInitialSSE, totalInitialSSE * 0.001);
       groups[split_index].skip_split = true;
       continue;
     }
 
-    // Size Gate: Relaxed to catch small but important joints
-    const std::size_t max_vertex_size = 20;
-    if (g1.size() < max_vertex_size || g2.size() < max_vertex_size)
+    // GATE B: The "Absolute Size" Check
+    // Don't create bones smaller than 1% of the total mesh (e.g., 25 vertices for a 2500 mesh)
+    if (g1.size() < (numVertices * 0.01) || g2.size() < (numVertices * 0.01))
     {
       WARN_LOG_FMT(VIDEO, "Skipping parent group due to small size, max vertices allowed {}",
-                   max_vertex_size);
+                   numVertices * 0.01);
       groups[split_index].skip_split = true;
       continue;
     }
 
-    // Commit
+    // Commit the split
     groups.erase(groups.begin() + split_index);
     groups.emplace_back(g1, false);
     groups.emplace_back(g2, false);
   }
 
-  // Final mapping to IDs
+  // Map back to final array
   std::vector<int> finalAssignments(numVertices, 0);
   for (std::size_t g = 0; g < groups.size(); ++g)
   {
@@ -1116,7 +1004,6 @@ Eigen::MatrixXd ComputeHarmonicWeights(const std::vector<int>& assignments,
   }
 
   // 1. ROBUST CORE DETECTION (Geometry-Agnostic)
-  // Find the bone that moves the LEAST across the entire simulation.
   int core_idx = 0;
   double min_avg_sse = 1e12;
 
@@ -1161,6 +1048,13 @@ Eigen::MatrixXd ComputeHarmonicWeights(const std::vector<int>& assignments,
 
     Eigen::VectorXd proximity = heat_data.heat_solver.solve(delta);
 
+    // Normalize proximity to avoid scale blow-up
+    {
+      double maxp = proximity.maxCoeff();
+      if (maxp > 1e-12)
+        proximity /= maxp;
+    }
+
     for (int i = 0; i < N; ++i)
     {
       // Power 2.0: Create a smooth "S-Curve" falloff instead of a "Cliff"
@@ -1179,7 +1073,6 @@ Eigen::MatrixXd ComputeHarmonicWeights(const std::vector<int>& assignments,
   }
 
   // 4. LAPLACIAN SMOOTHING PASS (The "Patchwork" Eraser)
-  // Build adjacency from faces
   std::vector<std::vector<int>> adj(N);
   for (int i = 0; i < F.rows(); ++i)
   {
@@ -1191,7 +1084,6 @@ Eigen::MatrixXd ComputeHarmonicWeights(const std::vector<int>& assignments,
     }
   }
 
-  // Run 2 iterations of blurring to blend the bone boundaries
   for (int iter = 0; iter < 2; ++iter)
   {
     Eigen::MatrixXd W_smooth = W;
@@ -2097,6 +1989,9 @@ void VertexGroupDumper::Save()
   double final_epsilon = std::max(0.001, weld_distance);
   weld_mesh_euclidean(reassembled_data[0].transpose(), F_global, final_epsilon, SV, SVI, SVJ, SF);
 
+  WARN_LOG_FMT(VIDEO, "[MeshDebug] Welded vertex count: {} | Welded face count: {}", SV.rows(),
+               SF.rows());
+
   for (auto& pose : reassembled_data)
   {
     Eigen::Matrix3Xd p = Eigen::Matrix3Xd::Zero(3, SV.rows());
@@ -2135,9 +2030,9 @@ void VertexGroupDumper::Save()
    * Note: If your mesh isn't scaled to 1.0, this value must be multiplied
    * by (scale^2) to remain effective.
    */
-  const double tolerance = 0.05;
+  const double tolerance = 0.005;
   auto clean_grouping =
-      CalculateVertexGroupsAdaptive(reassembled_data, reassembled_data[0], tolerance, heat_data);
+      CalculateVertexGroupsAdaptive(reassembled_data, reassembled_data[0], tolerance);
 
   int bone_count = 0;
   for (int id : clean_grouping)
