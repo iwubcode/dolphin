@@ -40,6 +40,7 @@ public:
     std::map<int, std::size_t> frame_id_to_mesh_index;
     Eigen::MatrixXi rest_pose_face_indexes;
     std::size_t original_vertex_count;
+    std::vector<int> gpu_skinning_ids;
   };
 
 private:

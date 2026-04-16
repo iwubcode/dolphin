@@ -35,6 +35,18 @@
 #pragma warning(disable : 4267)  // "conversion from size_t to int in libigl
 #endif
 
+#include <Eigen/Dense>
+#include <iostream>
+#include <map>
+#include <vector>
+
+struct ReferenceBone
+{
+  std::string name;
+  std::vector<int> vertIndices;
+  double maxMDE = 0.0;
+};
+
 namespace
 {
 namespace SimpleGeodesic
@@ -51,53 +63,54 @@ struct HeatGeodesicsData
   Eigen::VectorXd geo_from_center;
 };
 
-/**
- * Precompute the sparse factors for the Heat Method.
- * Returns false if the mesh is degenerate or matrices are not positive definite.
- */
-bool heat_geodesics_precompute(const Eigen::MatrixXd& V, const Eigen::MatrixXi& F,
-                               HeatGeodesicsData& data)
+int FindAnatomicalSource(const Eigen::MatrixXd& V)
 {
-  int n = V.rows();
+  Eigen::Vector3d centroid = V.colwise().mean();
+  int best_v = 0;
+  double min_dist = 1e12;
+
+  for (int i = 0; i < V.rows(); ++i)
+  {
+    double d = (V.row(i).transpose() - centroid).norm();
+    if (d < min_dist)
+    {
+      min_dist = d;
+      best_v = i;
+    }
+  }
+  return best_v;  // This is the "Mass Center" vertex
+}
+
+bool heat_geodesics_precompute(const Eigen::MatrixXd& V, const Eigen::MatrixXi& F,
+                               SimpleGeodesic::HeatGeodesicsData& data)
+{
+  int n = (int)V.rows();
   data.V = V;
   data.F = F;
 
+  // 1. Standard Cotangent Laplacian (L) and Mass (M)
   std::vector<Eigen::Triplet<double>> L_triplets, M_triplets;
-  double total_edge_len = 0;
-  int edge_count = 0;
-
   for (int f = 0; f < F.rows(); ++f)
   {
     for (int i = 0; i < 3; ++i)
     {
-      int i0 = F(f, i);
-      int i1 = F(f, (i + 1) % 3);
-      int i2 = F(f, (i + 2) % 3);
-
+      int i0 = F(f, i), i1 = F(f, (i + 1) % 3), i2 = F(f, (i + 2) % 3);
       Eigen::Vector3d v0 = V.row(i0), v1 = V.row(i1), v2 = V.row(i2);
-      Eigen::Vector3d e1 = v1 - v0, e2 = v2 - v0;
+      Eigen::Vector3d e1 = v1 - v0, e2 = v2 - v0, e3 = v2 - v1;
 
       double area = 0.5 * e1.cross(e2).norm();
-      if (area < 1e-12)
-        continue;  // Skip degenerate
+      if (area < 1e-10)
+        continue;
 
-      // Cotangent of angle at v0
+      // Cotangents
       double cot0 = e1.dot(e2) / e1.cross(e2).norm();
       double weight = 0.5 * cot0;
 
-      // Add to off-diagonals (v1, v2)
       L_triplets.push_back({i1, i2, weight});
       L_triplets.push_back({i2, i1, weight});
-
-      // Add to diagonals
       L_triplets.push_back({i1, i1, -weight});
       L_triplets.push_back({i2, i2, -weight});
-
-      // Mass Matrix (Barycentric area)
       M_triplets.push_back({i0, i0, area / 3.0});
-
-      total_edge_len += e1.norm();
-      edge_count++;
     }
   }
 
@@ -105,197 +118,48 @@ bool heat_geodesics_precompute(const Eigen::MatrixXd& V, const Eigen::MatrixXi& 
   L.setFromTriplets(L_triplets.begin(), L_triplets.end());
   M.setFromTriplets(M_triplets.begin(), M_triplets.end());
 
-  // t = h^2 where h is mean edge length
-  double h = total_edge_len / edge_count;
-  data.t = h * h * 0.1;
+  // 2. ROBUST TIME STEP (t)
+  // Instead of mean edge, use the bounding box diagonal for stability
+  Eigen::Vector3d minB = V.colwise().minCoeff();
+  Eigen::Vector3d maxB = V.colwise().maxCoeff();
+  double h = (maxB - minB).norm() / 20.0;  // Typical heuristic
+  data.t = h * h;
 
-  // Heat step: (M - tL)
+  // 3. SOLVE HEAT: (M - tL)u = delta
   Eigen::SparseMatrix<double> A_heat = M - data.t * L;
+
+  // Add a tiny stabilizer to the diagonal to handle non-manifold/floating verts
+  for (int i = 0; i < n; ++i)
+    A_heat.coeffRef(i, i) += 1e-8;
+
   data.heat_solver.compute(A_heat);
 
-  // Calculate geo_from_center
-  Eigen::Vector3d centroid = V.colwise().mean();
-  int center_v = 0;
-  double min_dist = 1e9;
-  for (int i = 0; i < V.rows(); ++i)
+  Eigen::VectorXd rhs = Eigen::VectorXd::Zero(n);
+  rhs(FindAnatomicalSource(V)) = 1.0;
+  Eigen::VectorXd u = data.heat_solver.solve(rhs);
+
+  // 5. TRANSFORM TO DISTANCE
+  Eigen::VectorXd d(n);
+  for (int i = 0; i < n; ++i)
   {
-    double d = (V.row(i).transpose() - centroid).norm();
-    if (d < min_dist)
-    {
-      min_dist = d;
-      center_v = i;
-    }
+    // Correcting the Varadhan's approximation: distance ~ -sqrt(t) * log(u)
+    d(i) = -std::sqrt(data.t) * std::log(std::max(1e-12, u(i)));
   }
 
-  Eigen::VectorXd rhs = Eigen::VectorXd::Zero(V.rows());
-  rhs(center_v) = 1.0;
-  data.geo_from_center = data.heat_solver.solve(rhs);
+  // Normalize
+  double minv = d.minCoeff();
+  d.array() -= minv;
+  double maxv = d.maxCoeff();
+  if (maxv > 1e-12)
+    d /= maxv;
 
-  // Normalize geo_from_center to a stable [0,1] range to prevent scale domination
-  {
-    double minv = data.geo_from_center.minCoeff();
-    data.geo_from_center.array() -= minv;
-    double maxv = data.geo_from_center.maxCoeff();
-    if (maxv > 1e-12)
-      data.geo_from_center /= maxv;
-  }
-
+  data.geo_from_center = d;
   data.L = L;
   data.M = M;
   return data.heat_solver.info() == Eigen::Success;
 }
 
 }  // namespace SimpleGeodesic
-
-// Post-process bone assignments to ensure contiguous regions
-void PostProcessBoneGroupsByConnectivity(std::vector<int>& assignments, const Eigen::MatrixXi& F,
-                                         int numVertices, int numBones)
-{
-  // Build adjacency
-  std::vector<std::vector<int>> adj(numVertices);
-  for (int i = 0; i < F.rows(); ++i)
-  {
-    for (int j = 0; j < 3; ++j)
-    {
-      int u = F(i, j);
-      int v = F(i, (j + 1) % 3);
-      adj[u].push_back(v);
-      adj[v].push_back(u);
-    }
-  }
-
-  // For each bone, find contiguous islands
-  std::vector<int> islandID(numVertices, -1);
-  std::vector<std::vector<int>> islands;
-  std::vector<int> islandBoneType;
-
-  std::vector<bool> visited(numVertices, false);
-  for (int i = 0; i < numVertices; ++i)
-  {
-    if (visited[i])
-      continue;
-
-    int currentBone = assignments[i];
-    std::vector<int> component;
-    std::queue<int> q;
-    q.push(i);
-    visited[i] = true;
-
-    while (!q.empty())
-    {
-      int u = q.front();
-      q.pop();
-      component.push_back(u);
-      islandID[u] = (int)islands.size();
-      for (int v : adj[u])
-      {
-        if (!visited[v] && assignments[v] == currentBone)
-        {
-          visited[v] = true;
-          q.push(v);
-        }
-      }
-    }
-    islandBoneType.push_back(currentBone);
-    islands.push_back(component);
-  }
-
-  // For each bone, keep only the largest contiguous island
-  std::vector<int> alphaIslandForBone(numBones, -1);
-  std::vector<size_t> maxSizes(numBones, 0);
-  for (std::size_t i = 0; i < islands.size(); i++)
-  {
-    int b = islandBoneType[i];
-    if (islands[i].size() > maxSizes[b])
-    {
-      maxSizes[b] = islands[i].size();
-      alphaIslandForBone[b] = i;
-    }
-  }
-
-  // Snap orphans: If you're not in your bone's alpha island, assign to neighbor's bone
-  for (int i = 0; i < numVertices; i++)
-  {
-    int myIsland = islandID[i];
-    int myBone = assignments[i];
-
-    if (myIsland != alphaIslandForBone[myBone])
-    {
-      // Find a neighbor in a main island
-      for (int neighbor : adj[i])
-      {
-        int nIsland = islandID[neighbor];
-        int nBone = assignments[neighbor];
-        if (nIsland == alphaIslandForBone[nBone])
-        {
-          assignments[i] = nBone;
-          break;
-        }
-      }
-    }
-  }
-}
-
-void MergeSmallAdjacentGroups(std::vector<int>& assignments, const Eigen::MatrixXi& F,
-                              const SimpleGeodesic::HeatGeodesicsData& heat_data, int numBones)
-{
-  // For each pair of bones, if they're adjacent and geodesic distance is low, merge
-  for (int b1 = 0; b1 < numBones; ++b1)
-  {
-    for (int b2 = b1 + 1; b2 < numBones; ++b2)
-    {
-      // Find adjacency
-      bool adjacent = false;
-      for (int i = 0; i < F.rows(); ++i)
-      {
-        for (int j = 0; j < 3; ++j)
-        {
-          int u = F(i, j);
-          int v = F(i, (j + 1) % 3);
-          if ((assignments[u] == b1 && assignments[v] == b2) ||
-              (assignments[u] == b2 && assignments[v] == b1))
-          {
-            adjacent = true;
-            break;
-          }
-        }
-        if (adjacent)
-          break;
-      }
-      if (!adjacent)
-        continue;
-
-      // Compute geodesic distance between groups
-      std::vector<int> group1, group2;
-      for (int i = 0; i < assignments.size(); ++i)
-      {
-        if (assignments[i] == b1)
-          group1.push_back(i);
-        if (assignments[i] == b2)
-          group2.push_back(i);
-      }
-      if (group1.empty() || group2.empty())
-        continue;
-
-      // Use heat_data to compute geodesic distance
-      Eigen::VectorXd rhs = Eigen::VectorXd::Zero(heat_data.V.rows());
-      for (int idx : group1)
-        rhs(idx) = 1.0;
-      Eigen::VectorXd geo = heat_data.heat_solver.solve(rhs);
-
-      double minDist = 1e9;
-      for (int idx : group2)
-        minDist = std::min(minDist, geo(idx));
-
-      // If geodesic distance is low, merge
-      if (minDist < 0.05)  // threshold: tweak as needed
-      {
-        for (int idx : group2)
-          assignments[idx] = b1;
-      }
-    }
-  }
-}
 
 /**
  * @brief Merges vertices within a 3D Euclidean distance (L2) of each other.
@@ -329,7 +193,7 @@ void weld_mesh_euclidean(const Eigen::MatrixXd& V,  // Input: N x 3 (original ve
     int match = -1;
 
     // Linear search is fine for 2k-10k vertices.
-    // If it's too slow, we can add a spatial hash later.
+    // TODO: use spatial hash to optimize
     for (int j = 0; j < (int)unique_list.size(); ++j)
     {
       if ((p - unique_list[j]).norm() <= epsilon)
@@ -456,6 +320,27 @@ Eigen::Matrix3Xd ConvertMeshPositions(const std::vector<Common::Vec3>& positions
   return result;
 }
 
+std::vector<int> GetGPUSkinningIDs(const GraphicsModSystem::DrawDataView& draw_data)
+{
+  const auto& declaration = draw_data.vertex_format->GetVertexDeclaration();
+
+  if (!declaration.posmtx.enable)
+    return {};
+
+  std::vector<int> result;
+  for (std::size_t i = 0; i < draw_data.vertex_count; i++)
+  {
+    // Position transform is actually vertex specific
+    u32 gpu_skin_index;
+    std::memcpy(&gpu_skin_index,
+                draw_data.vertex_data + i * declaration.stride + declaration.posmtx.offset,
+                sizeof(u32));
+    result.push_back(static_cast<int>(gpu_skin_index));
+  }
+
+  return result;
+}
+
 bool IsDuplicateMesh(const Eigen::Matrix3Xd& mesh,
                      const std::vector<Eigen::Matrix3Xd>& existing_meshes, float epsilon = 1e-4f)
 {
@@ -570,6 +455,48 @@ std::vector<Eigen::Matrix3Xd> ReassembleSignificantFrames(
   }
 
   return motionFrames;
+}
+
+std::vector<int> GetGlobalGPUSkinningIDs(
+    const std::map<GraphicsModSystem::DrawCallID, GraphicsModEditor::VertexGroupDumper::FinalData>&
+        draw_call_to_mesh_data,
+    std::map<int, int>* global_id_to_gpu_skinning_id)
+{
+  std::map<std::pair<GraphicsModSystem::DrawCallID, int>, int>
+      draw_call_gpu_skinning_id_to_global_id;
+
+  std::size_t total_vertices = 0;
+  for (const auto& [draw_call, data] : draw_call_to_mesh_data)
+  {
+    total_vertices += static_cast<std::size_t>(data.mesh_poses[0].cols());
+  }
+
+  std::vector<int> gpu_skinning_ids(total_vertices, -1);
+  int next_global_id = 0;
+
+  int current_offset = 0;
+  for (const auto& [draw_call, data] : draw_call_to_mesh_data)
+  {
+    const auto vertex_count = static_cast<std::size_t>(data.mesh_poses[0].cols());
+
+    for (std::size_t i = 0; i < data.gpu_skinning_ids.size(); i++)
+    {
+      const int gpu_skinning_id = data.gpu_skinning_ids[i];
+      const auto [iter, added] =
+          draw_call_gpu_skinning_id_to_global_id.try_emplace({draw_call, gpu_skinning_id}, 0);
+      if (added)
+      {
+        iter->second = next_global_id;
+        (*global_id_to_gpu_skinning_id)[next_global_id] = gpu_skinning_id;
+        next_global_id++;
+      }
+      gpu_skinning_ids[current_offset + i] = iter->second;
+    }
+
+    current_offset += vertex_count;
+  }
+
+  return gpu_skinning_ids;
 }
 
 /**
@@ -697,89 +624,6 @@ double CalculateRigidSSE_WorldSpace(const std::vector<int>& indices,
   return totalSSE;
 }
 
-/**
- * Performs a binary split of a vertex group based on raw motion data.
- *
- * Instead of looking at 3D shapes, this function treats each vertex as a
- * point in a high-dimensional "Motion Space" (3 * Number of Frames).
- * It uses a stable 2-seed K-Means clustering to find the two most
- * distinct motion patterns within the group.
- *
- * @param allPoses The complete animation data.
- * @param targetIndices The specific subset of vertices to be split.
- * @param assignments [Out] Maps vertex indices to Group 0 or Group 1.
- */
-void rigid_split_raw(const std::vector<Eigen::Matrix3Xd>& allPoses,
-                     const std::vector<int>& targetIndices, std::vector<int>& assignments)
-{
-  const std::size_t N_sub = targetIndices.size();
-  const std::size_t K = allPoses.size();
-
-  // 1. Build a local Motion Descriptor (Vertices x 3K coordinates)
-  Eigen::MatrixXd motion(N_sub, 3 * K);
-  for (std::size_t i = 0; i < N_sub; ++i)
-  {
-    int vIdx = targetIndices[i];
-    for (std::size_t k = 0; k < K; ++k)
-    {
-      motion.row(i).segment<3>(k * 3) = allPoses[k].col(vIdx);
-    }
-  }
-
-  // 2. Farthest-First Traversal for K=2 Seeds (Stable Initialization)
-  int s1 = 0;
-  int s2 = -1;
-  double maxD = -1;
-  for (std::size_t i = 1; i < N_sub; ++i)
-  {
-    double d = (motion.row(i) - motion.row(s1)).squaredNorm();
-    if (d > maxD)
-    {
-      maxD = d;
-      s2 = static_cast<int>(i);
-    }
-  }
-
-  // 3. Iterative Lloyd's K-Means
-  //
-  // Use RowVectorXd to match the shape of motion.row(i)
-  Eigen::RowVectorXd c1 = motion.row(s1);
-  Eigen::RowVectorXd c2 = motion.row(s2);
-
-  for (int iter = 0; iter < 15; ++iter)
-  {
-    std::vector<int> g1_local, g2_local;
-
-    // Assignment
-    for (std::size_t i = 0; i < N_sub; ++i)
-    {
-      double d1 = (motion.row(i) - c1).squaredNorm();
-      double d2 = (motion.row(i) - c2).squaredNorm();
-      int best_k = (d1 < d2) ? 0 : 1;
-      assignments[targetIndices[i]] = best_k;
-
-      if (best_k == 0)
-        g1_local.push_back(i);
-      else
-        g2_local.push_back(i);
-    }
-
-    if (g1_local.empty() || g2_local.empty())
-      break;
-
-    // Update
-    c1.setZero();
-    for (int idx : g1_local)
-      c1 += motion.row(idx);
-    c1 /= static_cast<double>(g1_local.size());
-
-    c2.setZero();
-    for (int idx : g2_local)
-      c2 += motion.row(idx);
-    c2 /= static_cast<double>(g2_local.size());
-  }
-}
-
 double CalculateSingleVertexSSE(int vIdx, const std::vector<Eigen::Matrix3Xd>& allPoses,
                                 const Eigen::Matrix3Xd& restPose)
 {
@@ -904,215 +748,6 @@ void rigid_split_raw_hybrid(const std::vector<Eigen::Matrix3Xd>& allPoses,
   }
 }
 
-void rigid_split_raw_geodesic(const std::vector<Eigen::Matrix3Xd>& allPoses,
-                              const std::vector<int>& targetIndices, std::vector<int>& assignments,
-                              const SimpleGeodesic::HeatGeodesicsData& heat_data,
-                              bool force_topological)
-{
-  const std::size_t N_sub = targetIndices.size();
-  const std::size_t K = allPoses.size();
-
-  // 1. Build Motion Space (Used for K-Means refinement)
-  Eigen::MatrixXd motion(N_sub, 3 * K);
-  for (std::size_t i = 0; i < N_sub; ++i)
-  {
-    int vIdx = targetIndices[i];
-    for (std::size_t k = 0; k < K; ++k)
-    {
-      motion.row(i).segment<3>(k * 3) = allPoses[k].col(vIdx);
-    }
-  }
-
-  int s1 = 0, s2 = 0;
-
-  // 2. SEED SELECTION (The "Anatomical Foundation")
-  if (force_topological)
-  {
-    // Determine the longest axis of the CURRENT group (0=X, 1=Y, 2=Z)
-    Eigen::Vector3d minB(1e9, 1e9, 1e9), maxB(-1e9, -1e9, -1e9);
-    for (int idx : targetIndices)
-    {
-      Eigen::Vector3d p = heat_data.V.row(idx).transpose();
-      minB = minB.cwiseMin(p);
-      maxB = maxB.cwiseMax(p);
-    }
-
-    Eigen::Vector3d span = maxB - minB;
-    int axis = 0;
-    if (span.y() > span.x() && span.y() > span.z())
-      axis = 1;
-    else if (span.z() > span.x() && span.z() > span.y())
-      axis = 2;
-
-    // Force seeds to the extreme ends of the LONGEST axis
-    double minVal = 1e9, maxVal = -1e9;
-    for (int i = 0; i < (int)N_sub; ++i)
-    {
-      double val = heat_data.V(targetIndices[i], axis);
-      if (val < minVal)
-      {
-        minVal = val;
-        s1 = i;
-      }
-      if (val > maxVal)
-      {
-        maxVal = val;
-        s2 = i;
-      }
-    }
-  }
-  else
-  {
-    // Standard "Active" Seed 1
-    double maxSSE = -1.0;
-    for (std::size_t i = 0; i < N_sub; ++i)
-    {
-      double sse = CalculateSingleVertexSSE(targetIndices[i], allPoses, allPoses[0]);
-      if (sse > maxSSE)
-      {
-        maxSSE = sse;
-        s1 = (int)i;
-      }
-    }
-    // Seed 2: Furthest Geodesic
-    Eigen::VectorXd rhs1 = Eigen::VectorXd::Zero(heat_data.V.rows());
-    rhs1(targetIndices[s1]) = 1.0;
-    Eigen::VectorXd geo1 = heat_data.heat_solver.solve(rhs1);
-
-    // Normalize geo1 to [0,1]
-    {
-      double minv = geo1.minCoeff();
-      geo1.array() -= minv;
-      double maxv = geo1.maxCoeff();
-      if (maxv > 1e-12)
-        geo1 /= maxv;
-    }
-
-    double minHeat = 2.0;
-    for (std::size_t i = 0; i < N_sub; ++i)
-    {
-      if (geo1(targetIndices[i]) < minHeat)
-      {
-        minHeat = geo1(targetIndices[i]);
-        s2 = (int)i;
-      }
-    }
-  }
-
-  // 3. HYBRID K-MEANS WITH "SPATIAL LOCK"
-  Eigen::VectorXd rhs1 = Eigen::VectorXd::Zero(heat_data.V.rows());
-  rhs1(targetIndices[s1]) = 1.0;
-  Eigen::VectorXd geo1 = heat_data.heat_solver.solve(rhs1);
-
-  Eigen::VectorXd rhs2 = Eigen::VectorXd::Zero(heat_data.V.rows());
-  rhs2(targetIndices[s2]) = 1.0;
-  Eigen::VectorXd geo2 = heat_data.heat_solver.solve(rhs2);
-
-  // Normalize geodesic fields to [0,1] to keep them comparable to motion costs
-  {
-    double min1 = geo1.minCoeff();
-    geo1.array() -= min1;
-    double max1 = geo1.maxCoeff();
-    if (max1 > 1e-12)
-      geo1 /= max1;
-
-    double min2 = geo2.minCoeff();
-    geo2.array() -= min2;
-    double max2 = geo2.maxCoeff();
-    if (max2 > 1e-12)
-      geo2 /= max2;
-  }
-
-  Eigen::RowVectorXd c1 = motion.row(s1);
-  Eigen::RowVectorXd c2 = motion.row(s2);
-
-  for (int iter = 0; iter < 15; ++iter)
-  {
-    std::vector<int> g1_local, g2_local;
-    for (std::size_t i = 0; i < N_sub; ++i)
-    {
-      int gIdx = targetIndices[i];
-
-      // If forcing topological, ignore motion for first 5 iters to LOCK the cut
-      if (force_topological && iter < 5)
-      {
-        assignments[gIdx] = (geo1(gIdx) > geo2(gIdx)) ? 0 : 1;
-      }
-      else
-      {
-        double d1_m = (motion.row(i) - c1).squaredNorm();
-        double d2_m = (motion.row(i) - c2).squaredNorm();
-
-        // Physical Euclidean distance helps prevent "Heat Jumps"
-        double d1_phys = (heat_data.V.row(gIdx) - heat_data.V.row(targetIndices[s1])).squaredNorm();
-        double d2_phys = (heat_data.V.row(gIdx) - heat_data.V.row(targetIndices[s2])).squaredNorm();
-
-        // Use both Geodesic and Physical distance to decide the "Cut"
-        double cost1 = d1_m * (geo1(gIdx) + d1_phys * 0.1);
-        double cost2 = d2_m * (geo2(gIdx) + d2_phys * 0.1);
-
-        assignments[gIdx] = (cost1 < cost2) ? 0 : 1;
-      }
-      if (assignments[gIdx] == 0)
-        g1_local.push_back((int)i);
-      else
-        g2_local.push_back((int)i);
-    }
-    if (g1_local.empty() || g2_local.empty())
-      break;
-    c1.setZero();
-    for (int idx : g1_local)
-      c1 += motion.row(idx);
-    c1 /= g1_local.size();
-    c2.setZero();
-    for (int idx : g2_local)
-      c2 += motion.row(idx);
-    c2 /= g2_local.size();
-  }
-}
-
-double CalculateGroupGeodesicDiameter(const std::vector<int>& indices,
-                                      const SimpleGeodesic::HeatGeodesicsData& heat_data)
-{
-  if (indices.size() < 10)
-    return 0.0;
-
-  Eigen::VectorXd rhs = Eigen::VectorXd::Zero(heat_data.V.rows());
-  for (int idx : indices)
-    rhs(idx) = 1.0;
-
-  Eigen::VectorXd geo = heat_data.heat_solver.solve(rhs);
-
-  // Do NOT normalize geo globally to [0,1]
-  double max_h = -1e9;
-  double min_h = 1e9;
-  for (int idx : indices)
-  {
-    double h = geo(idx);
-    if (h > max_h)
-      max_h = h;
-    if (h < min_h)
-      min_h = h;
-  }
-  return std::max(0.0, max_h - min_h);
-}
-
-bool AreGroupsPhysicallyAdjacent(const std::vector<int>& g1, const std::vector<int>& g2,
-                                 const Eigen::MatrixXi& F)
-{
-  std::set<int> g1_set(g1.begin(), g1.end());
-  std::set<int> g2_set(g2.begin(), g2.end());
-  for (int i = 0; i < F.rows(); ++i)
-  {
-    int a = F(i, 0), b = F(i, 1), c = F(i, 2);
-    if ((g1_set.count(a) && g2_set.count(b)) || (g1_set.count(b) && g2_set.count(a)) ||
-        (g1_set.count(a) && g2_set.count(c)) || (g1_set.count(c) && g2_set.count(a)) ||
-        (g1_set.count(b) && g2_set.count(c)) || (g1_set.count(c) && g2_set.count(b)))
-      return true;
-  }
-  return false;
-}
-
 /**
  * Orchestrates the recursive bone discovery process using an SSE-based "Gate".
  *
@@ -1190,16 +825,16 @@ std::vector<int> CalculateVertexGroupsAdaptive(const std::vector<Eigen::Matrix3X
     const double child2SSE = CalculateRigidSSE_WorldSpace(g2, allPoses, restPose);
     const double combinedChildSSE = child1SSE + child2SSE;
 
-    double improvementFactor = combinedChildSSE / parentSSE;
+    // double improvementFactor = combinedChildSSE / parentSSE;
 
-    WARN_LOG_FMT(
+    /*WARN_LOG_FMT(
         VIDEO,
         "Step: {} | Parent size: {} | Child 1 size: {} | Child 2 size: {}, Improvement Factor: {}, "
         "Active "
         "groups: {}, Parent SSE: {} | Child 1 SSE: {} | Child 2 SSE: {} | Combined SSE: {}",
         groups.size(), groups[split_index].indices.size(), g1.size(), g2.size(), improvementFactor,
         std::count_if(groups.begin(), groups.end(), [](auto& g) { return !g.skip_split; }),
-        parentSSE, child1SSE, child2SSE, combinedChildSSE);
+        parentSSE, child1SSE, child2SSE, combinedChildSSE);*/
 
     const double improvement = parentSSE - combinedChildSSE;
 
@@ -1207,10 +842,11 @@ std::vector<int> CalculateVertexGroupsAdaptive(const std::vector<Eigen::Matrix3X
     // If the improvement is less than 0.01% of the total mesh error, it's not worth a new bone.
     if (improvement < (totalInitialSSE * 0.0001))
     {
-      WARN_LOG_FMT(VIDEO,
+      /*WARN_LOG_FMT(
+          VIDEO,
                    "Skipping parent group due to no significant contribution, actual improvement "
                    "{}, totalInitialSSE {}, minimum improvement required {}",
-                   improvement, totalInitialSSE, totalInitialSSE * 0.001);
+                   improvement, totalInitialSSE, totalInitialSSE * 0.001);*/
       groups[split_index].skip_split = true;
       continue;
     }
@@ -1219,8 +855,8 @@ std::vector<int> CalculateVertexGroupsAdaptive(const std::vector<Eigen::Matrix3X
     // Don't create bones smaller than 1% of the total mesh (e.g., 25 vertices for a 2500 mesh)
     if (g1.size() < (numVertices * 0.01) || g2.size() < (numVertices * 0.01))
     {
-      WARN_LOG_FMT(VIDEO, "Skipping parent group due to small size, max vertices allowed {}",
-                   numVertices * 0.01);
+      /*WARN_LOG_FMT(VIDEO, "Skipping parent group due to small size, max vertices allowed {}",
+                   numVertices * 0.01);*/
       groups[split_index].skip_split = true;
       continue;
     }
@@ -1242,6 +878,317 @@ std::vector<int> CalculateVertexGroupsAdaptive(const std::vector<Eigen::Matrix3X
 }
 
 /**
+ * Measures how much the motion varies within a single bucket.
+ * High variance indicates the bucket contains multiple distinct animations.
+ */
+double CalculateTemporalVariance(const std::vector<int>& frame_ids,
+                                 const std::vector<Eigen::Matrix3Xd>& allPoses)
+{
+  if (frame_ids.empty())
+    return 0.0;
+
+  const int numVerts = allPoses[0].cols();
+  const int signatureDim = numVerts * 3;
+
+  // 1. Compute the Mean Signature for this bucket
+  Eigen::VectorXd mean_sig = Eigen::VectorXd::Zero(signatureDim);
+  for (int f_id : frame_ids)
+  {
+    // We use the same 'Velocity' logic here for consistency
+    int prev_f = std::max(0, f_id - 1);
+    Eigen::Matrix3Xd delta = allPoses[f_id] - allPoses[prev_f];
+    mean_sig += Eigen::Map<const Eigen::VectorXd>(delta.data(), signatureDim);
+  }
+  mean_sig /= static_cast<double>(frame_ids.size());
+
+  // 2. Calculate average squared distance from the mean
+  double total_variance = 0.0;
+  for (int f_id : frame_ids)
+  {
+    int prev_f = std::max(0, f_id - 1);
+    Eigen::Matrix3Xd delta = allPoses[f_id] - allPoses[prev_f];
+    Eigen::VectorXd sig = Eigen::Map<const Eigen::VectorXd>(delta.data(), signatureDim);
+    total_variance += (sig - mean_sig).squaredNorm();
+  }
+
+  return total_variance / static_cast<double>(frame_ids.size());
+}
+
+/**
+ * Calculates the Total Sum of Squared Error for a group of frames.
+ * This represents the "Motion Volume" of a bucket.
+ */
+double CalculateTemporalSSE(const std::vector<int>& frame_ids,
+                            const std::vector<Eigen::Matrix3Xd>& allPoses)
+{
+  if (frame_ids.empty())
+    return 0.0;
+
+  const int numVerts = allPoses[0].cols();
+  const int signatureDim = numVerts * 3;
+
+  // 1. Compute the Mean Signature for this group of frames
+  Eigen::VectorXd mean_sig = Eigen::VectorXd::Zero(signatureDim);
+  for (int f_id : frame_ids)
+  {
+    // Use the same 'Velocity' logic for consistency
+    const int STRIDE = 5;  // Look 5 frames back (approx 1/12th of a second at 60fps)
+    int prev_f = std::max(0, f_id - STRIDE);
+    Eigen::Matrix3Xd delta = allPoses[f_id] - allPoses[prev_f];
+    mean_sig += Eigen::Map<const Eigen::VectorXd>(delta.data(), signatureDim);
+  }
+  mean_sig /= static_cast<double>(frame_ids.size());
+
+  // 2. Sum of Squared Distances from that Mean
+  double total_sse = 0.0;
+  for (int f_id : frame_ids)
+  {
+    const int STRIDE = 5;  // Look 5 frames back (approx 1/12th of a second at 60fps)
+    int prev_f = std::max(0, f_id - STRIDE);
+    Eigen::Matrix3Xd delta = allPoses[f_id] - allPoses[prev_f];
+    Eigen::VectorXd sig = Eigen::Map<const Eigen::VectorXd>(delta.data(), signatureDim);
+
+    // This is the SSE: (Point - Mean)^2
+    total_sse += (sig - mean_sig).squaredNorm();
+  }
+
+  return total_sse;
+}
+
+/**
+ * Slices a group of frames into two distinct sub-groups.
+ * Uses a binary split strategy similar to your 'rigid_split_raw'.
+ */
+std::pair<std::vector<int>, std::vector<int>>
+BinaryFrameSplit(const std::vector<int>& frame_ids, const std::vector<Eigen::Matrix3Xd>& allPoses,
+                 const Eigen::Matrix3Xd& restPose)
+{
+  const int numFrames = frame_ids.size();
+  const int signatureDim = restPose.cols() * 3;
+
+  // 1. Extract signatures for all frames in this bucket
+  std::vector<Eigen::VectorXd> sigs;
+  const int STRIDE = 10;
+  for (int f_id : frame_ids)
+  {
+    int prev_f = std::max(0, f_id - STRIDE);
+    Eigen::Matrix3Xd delta = allPoses[f_id] - allPoses[prev_f];
+    sigs.push_back(Eigen::Map<const Eigen::VectorXd>(delta.data(), signatureDim));
+  }
+
+  // Instead of the 'Max Distance' (which finds glitches),
+  // we pick the frames at 1/4 and 3/4 of the way through the group.
+  // This ensures we pick two points that are far apart in TIME.
+  int s1 = numFrames / 4;
+  int s2 = (3 * numFrames) / 4;
+
+  Eigen::VectorXd c1 = sigs[s1];
+  Eigen::VectorXd c2 = sigs[s2];
+
+  // 3. Binary K-Means refinement (5-10 iterations is plenty for 1D timeline splitting)
+  std::vector<int> g1_indices, g2_indices;
+  for (int iter = 0; iter < 10; ++iter)
+  {
+    g1_indices.clear();
+    g2_indices.clear();
+    for (int i = 0; i < numFrames; ++i)
+    {
+      double d1 = (sigs[i] - c1).squaredNorm();
+      double d2 = (sigs[i] - c2).squaredNorm();
+      if (d1 < d2)
+        g1_indices.push_back(i);
+      else
+        g2_indices.push_back(i);
+    }
+
+    if (g1_indices.empty() || g2_indices.empty())
+      break;
+
+    // Update centers
+    c1.setZero();
+    for (int idx : g1_indices)
+      c1 += sigs[idx];
+    c1 /= g1_indices.size();
+    c2.setZero();
+    for (int idx : g2_indices)
+      c2 += sigs[idx];
+    c2 /= g2_indices.size();
+  }
+
+  // Convert local indices back to global frame IDs
+  std::vector<int> g1, g2;
+  for (int idx : g1_indices)
+    g1.push_back(frame_ids[idx]);
+  for (int idx : g2_indices)
+    g2.push_back(frame_ids[idx]);
+
+  return {g1, g2};
+}
+
+/**
+ * Segments the animation timeline into distinct "Temporal Buckets" based on
+ * variations in character pose.
+ *
+ * Logic:
+ * 1. Analyzes the total "Temporal SSE" (the deviation from a static pose).
+ * 2. Uses a Binary K-Means approach to split the timeline where the motion
+ *    is most complex (e.g., separating a "Walk" from a "Jump").
+ * 3. Enforces "Statistical Stability" (Gate B) by ensuring buckets have enough
+ *    frames to propose reliable, non-coincidental bones.
+ * 4. Stops when the motion within each bucket is "Rigid Enough" (Tolerance)
+ *    or the 64-bucket complexity limit is reached.
+ *
+ * Result: A set of frame-groups where the character's movement is internally
+ * consistent, providing the best starting point for bone discovery.
+ */
+std::map<int, std::vector<int>>
+AdaptiveTimelineSplitter(const std::vector<Eigen::Matrix3Xd>& allPoses,
+                         const Eigen::Matrix3Xd& restPose,
+                         double temporal_tolerance = 0.01)  // Adjust based on your capture noise
+{
+  const int numFrames = allPoses.size();
+  std::vector<int> allIndices(numFrames);
+  std::iota(allIndices.begin(), allIndices.end(), 0);
+
+  struct BucketGroup
+  {
+    std::vector<int> frames;
+    bool skip_split = false;
+  };
+
+  std::vector<BucketGroup> groups = {{allIndices, false}};
+
+  // Calculate the 'Initial Temporal Error' (Total movement of the animation)
+  const double totalInitialSSE = CalculateTemporalSSE(allIndices, allPoses);
+
+  while (groups.size() < 64)
+  {
+    int split_idx = -1;
+    double maxSSE = -1;
+
+    // 1. SEARCH: Find the group that exceeds our NOISE FLOOR and is the "messiest"
+    for (int i = 0; i < groups.size(); ++i)
+    {
+      if (groups[i].skip_split)
+        continue;
+
+      double sse = CalculateTemporalSSE(groups[i].frames, allPoses);
+
+      // LESSON: Use the tolerance to ignore "Static" noise
+      if (sse > temporal_tolerance && sse > maxSSE)
+      {
+        maxSSE = sse;
+        split_idx = i;
+      }
+    }
+
+    if (split_idx == -1)
+      break;
+
+    // 2. SPLIT: Binary K-Means on the frames
+    auto [g1, g2] = BinaryFrameSplit(groups[split_idx].frames, allPoses, restPose);
+
+    if (g1.empty() || g2.empty())
+    {
+      groups[split_idx].skip_split = true;
+      continue;
+    }
+
+    // 3. GATE: The Improvement Check (Mirroring CalculateVertexGroupsAdaptive)
+    double parentSSE = CalculateTemporalSSE(groups[split_idx].frames, allPoses);
+    double combinedChildSSE =
+        CalculateTemporalSSE(g1, allPoses) + CalculateTemporalSSE(g2, allPoses);
+
+    WARN_LOG_FMT(VIDEO,
+                 "Step: {} | Parent size: {} | Child 1 size: {} | Child 2 size: {}, "
+                 "Active "
+                 "groups: {}, Parent SSE: {} | Combined SSE: {}",
+                 groups.size(), groups[split_idx].frames.size(), g1.size(), g2.size(),
+                 std::count_if(groups.begin(), groups.end(), [](auto& g) { return !g.skip_split; }),
+                 parentSSE, combinedChildSSE);
+
+    double improvement = parentSSE - combinedChildSSE;
+
+    // GATE A: Significant Contribution Check (0.1% of total motion)
+    if (improvement < (totalInitialSSE * 0.001))
+    {
+      WARN_LOG_FMT(VIDEO,
+                   "Skipping parent group due to no significant contribution, actual improvement "
+                   "{}, totalInitialSSE {}, minimum improvement required {}",
+                   improvement, totalInitialSSE, totalInitialSSE * 0.001);
+      groups[split_idx].skip_split = true;
+      continue;
+    }
+
+    // GATE B: Physical Size Check (No bucket < max frames)
+    const std::size_t max_frames = 8;
+    if (g1.size() < max_frames || g2.size() < max_frames)
+    {
+      WARN_LOG_FMT(VIDEO, "Skipping parent group due to small size, max frames allowed {}",
+                   max_frames);
+      groups[split_idx].skip_split = true;
+      continue;
+    }
+
+    // COMMIT THE SPLIT
+    groups.erase(groups.begin() + split_idx);
+    groups.push_back({g1, false});
+    groups.push_back({g2, false});
+  }
+
+  // [Convert back to map...]
+  std::map<int, std::vector<int>> result;
+  for (int i = 0; i < groups.size(); ++i)
+    result[i] = groups[i].frames;
+  return result;
+}
+
+void PrintWeightConflictDiagnostic(const Eigen::MatrixXd& W,
+                                   const SimpleGeodesic::HeatGeodesicsData& heat_data)
+{
+  INFO_LOG_FMT(VIDEO, "--- WEIGHT CONFLICT: NECK REGION (Geo 0.25 - 0.35) ---");
+  INFO_LOG_FMT(VIDEO, "{:<8} {:<10} {:<10} {:<10}", "VertID", "GeoDist", "Top Bone", "Top Weight");
+
+  int count = 0;
+  for (int i = 0; i < W.rows(); ++i)
+  {
+    double g = heat_data.geo_from_center(i);
+    if (g > 0.25 && g < 0.35)
+    {  // The "Transit Zone" between Head and Chest
+      int maxBone = 0;
+      double maxW = W.row(i).maxCoeff(&maxBone);
+      if (count++ < 20)
+      {
+        INFO_LOG_FMT(VIDEO, "{:<8} {:<10.3f} {:<10} {:<10.3f}", i, g, maxBone, maxW);
+      }
+    }
+  }
+}
+
+int IdentifyAnatomicalRoot_V2(const std::vector<int>& assignments,
+                              const SimpleGeodesic::HeatGeodesicsData& heat_data)
+{
+  int numBones = 0;
+  for (int b : assignments)
+    numBones = std::max(numBones, b + 1);
+
+  int bestRoot = -1;
+  double minGeo = 1e12;
+
+  for (int i = 0; i < assignments.size(); ++i)
+  {
+    // We look for the vertex that is literally the closest to the
+    // geodesic source point (the pelvis match we lit).
+    if (heat_data.geo_from_center(i) < minGeo)
+    {
+      minGeo = heat_data.geo_from_center(i);
+      bestRoot = assignments[i];
+    }
+  }
+  return bestRoot;
+}
+
+/**
  * @brief Converts 'Hard' bone assignments into 'Smooth' Linear Blend Skinning (LBS) weights.
  *
  * Uses the Heat Equation with a "Sovereign Shield" to protect small anatomical
@@ -1256,73 +1203,106 @@ Eigen::MatrixXd ComputeHarmonicWeights(const std::vector<int>& assignments,
   const int N = static_cast<int>(V.cols());
   Eigen::MatrixXd W = Eigen::MatrixXd::Zero(N, numBones);
 
+  // 1. Identify the Anatomical Anchor (Lowest GeoAvg)
+  int anchorID = IdentifyAnatomicalRoot_V2(assignments, heat_data);
+
+  // 2. Pre-calculate Bone Metadata for the Veto
+  struct BoneMeta
+  {
+    double minGeo;
+    double avgGeo;
+    bool exists;
+  };
+  std::vector<BoneMeta> boneMeta(numBones, {1e12, 0.0, false});
   std::vector<int> counts(numBones, 0);
-  for (int a : assignments)
+
+  for (int i = 0; i < N; ++i)
   {
-    if (a >= 0 && a < numBones)
-      counts[a]++;
+    int b = assignments[i];
+    boneMeta[b].minGeo = std::min(boneMeta[b].minGeo, heat_data.geo_from_center(i));
+    boneMeta[b].avgGeo += heat_data.geo_from_center(i);
+    counts[b]++;
+    boneMeta[b].exists = true;
   }
-
-  // 1. ROBUST CORE DETECTION (Geometry-Agnostic)
-  int core_idx = 0;
-  double min_avg_sse = 1e12;
-
   for (int b = 0; b < numBones; ++b)
   {
-    double total_sse = 0;
-    int count = 0;
-    for (int i = 0; i < N; ++i)
-    {
-      if (assignments[i] == b)
-      {
-        total_sse += CalculateSingleVertexSSE(i, allPoses, V);
-        count++;
-      }
-    }
-    if (count > 0)
-    {
-      double avg_sse = total_sse / (double)count;
-      if (avg_sse < min_avg_sse)
-      {
-        min_avg_sse = avg_sse;
-        core_idx = b;
-      }
-    }
+    if (counts[b] > 0)
+      boneMeta[b].avgGeo /= counts[b];
   }
 
-  // 2. COMPUTE RAW WEIGHTS (Diffusion)
+  // 3. Solve Heat with Veto and Masking
   for (int b = 0; b < numBones; ++b)
   {
-    Eigen::VectorXd delta = Eigen::VectorXd::Zero(N);
-    bool has_verts = false;
-    for (int i = 0; i < N; ++i)
-    {
-      if (assignments[i] == b)
-      {
-        delta(i) = 1.0;
-        has_verts = true;
-      }
-    }
-    if (!has_verts)
+    if (!boneMeta[b].exists)
       continue;
 
+    Eigen::VectorXd delta = Eigen::VectorXd::Zero(N);
+    for (int i = 0; i < N; ++i)
+      if (assignments[i] == b)
+        delta(i) = 1.0;
+
     Eigen::VectorXd proximity = heat_data.heat_solver.solve(delta);
+    double maxp = proximity.maxCoeff();
+    if (maxp > 1e-12)
+      proximity /= maxp;
 
-    // Normalize proximity to avoid scale blow-up
-    {
-      double maxp = proximity.maxCoeff();
-      if (maxp > 1e-12)
-        proximity /= maxp;
-    }
-
+    // --- THE SCIENTIFIC FILTERS ---
     for (int i = 0; i < N; ++i)
     {
-      // Power 1.5: Create a smooth "S-Curve" falloff instead of a "Cliff"
-      W(i, b) = std::pow(std::max(0.0, proximity(i)), 1.5);
+      double vGeo = heat_data.geo_from_center(i);
+
+      // A. UPSTREAM VETO: A bone cannot influence vertices
+      // closer to the heart (Anchor) than its own starting point.
+      if (b != anchorID && vGeo < boneMeta[b].minGeo)
+      {
+        proximity(i) = 0.0;
+      }
+
+      // B. GEODESIC MASK: Exponential falloff beyond a "Joint Radius"
+      double distToBone = std::abs(vGeo - boneMeta[b].avgGeo);
+      if (distToBone > 0.15)
+      {
+        proximity(i) *= std::exp(-10.0 * (distToBone - 0.15));
+      }
+    }
+
+    // C. SHARPEN: Power of 4 for tighter transitions
+    for (int i = 0; i < N; ++i)
+    {
+      W(i, b) = std::pow(std::max(0.0, proximity(i)), 4.0);
     }
   }
 
-  // 3. INITIAL NORMALIZATION
+  // 4. WINNER-TAKE-MOST: Force commitment in conflict zones
+  for (int i = 0; i < N; ++i)
+  {
+    int b1 = -1;
+    double w1 = -1.0, w2 = -1.0;
+    for (int b = 0; b < numBones; ++b)
+    {
+      if (W(i, b) > w1)
+      {
+        w2 = w1;
+        w1 = W(i, b);
+        b1 = b;
+      }
+      else if (W(i, b) > w2)
+      {
+        w2 = W(i, b);
+      }
+    }
+    // If winner is dominant, kill the "chatter" from other bones
+    if (w1 > w2 * 2.0)
+    {
+      for (int b = 0; b < numBones; ++b)
+      {
+        if (b != b1 && W(i, b) < 0.1)
+          W(i, b) = 0.0;
+      }
+    }
+  }
+
+  // 5. Final Normalization
   for (int i = 0; i < N; ++i)
   {
     double s = W.row(i).sum();
@@ -1332,63 +1312,7 @@ Eigen::MatrixXd ComputeHarmonicWeights(const std::vector<int>& assignments,
       W(i, assignments[i]) = 1.0;
   }
 
-  // 4. LAPLACIAN SMOOTHING PASS (The "Patchwork" Eraser)
-  std::vector<std::vector<int>> adj(N);
-  for (int i = 0; i < F.rows(); ++i)
-  {
-    for (int j = 0; j < 3; ++j)
-    {
-      int u = F(i, j), v = F(i, (j + 1) % 3);
-      adj[u].push_back(v);
-      adj[v].push_back(u);
-    }
-  }
-
-  for (int iter = 0; iter < 2; ++iter)
-  {
-    Eigen::MatrixXd W_smooth = W;
-    for (int i = 0; i < N; ++i)
-    {
-      if (adj[i].empty())
-        continue;
-      Eigen::RowVectorXd sum = W.row(i);
-      for (int neighbor : adj[i])
-        sum += W.row(neighbor);
-      W_smooth.row(i) = sum / (double)(adj[i].size() + 1);
-    }
-    W = W_smooth;
-  }
-
-  // 5. FINAL RE-NORMALIZATION
-  for (int i = 0; i < N; ++i)
-  {
-    double s = W.row(i).sum();
-    if (s > 1e-9)
-      W.row(i) /= s;
-  }
-
-  for (int b = 0; b < numBones; ++b)
-  {
-    if (counts[b] > 0)
-    {
-      // Find center of this bone
-      Eigen::Vector3d avgP = Eigen::Vector3d::Zero();
-      int bCount = 0;
-      for (int i = 0; i < N; ++i)
-      {
-        if (assignments[i] == b)
-        {
-          avgP += V.col(i);
-          bCount++;
-        }
-      }
-      avgP /= bCount;
-      WARN_LOG_FMT(VIDEO, "Bone {}: {} verts, Pos: ({:.2f}, {:.2f}, {:.2f}) {}", b, bCount,
-                   avgP.x(), avgP.y(), avgP.z(), (b == core_idx ? "[CORE]" : ""));
-    }
-  }
-
-  WARN_LOG_FMT(VIDEO, "Core Bone identified as: {} (Min SSE: {:.6f})", core_idx, min_avg_sse);
+  PrintWeightConflictDiagnostic(W, heat_data);
   return W;
 }
 
@@ -1507,7 +1431,7 @@ std::vector<Eigen::Vector3d> ComputeBoneRestPositions(const std::vector<std::vec
  * back to their actual physical neighbors.
  */
 void CleanBoneIslands(std::vector<int>& assignments, const Eigen::MatrixXi& F, int numVertices,
-                      int numBones)
+                      int numBones, int max_gpu_skinned_id)
 {
   // 1. Build Adjacency
   std::vector<std::vector<int>> adj(numVertices);
@@ -1533,7 +1457,12 @@ void CleanBoneIslands(std::vector<int>& assignments, const Eigen::MatrixXi& F, i
     if (visited[i])
       continue;
 
-    int currentBone = assignments[i];
+    const int current_bone = assignments[i];
+
+    // Don't modify gpu skinned bones
+    if (current_bone <= max_gpu_skinned_id)
+      continue;
+
     std::vector<int> component;
     std::queue<int> q;
     q.push(i);
@@ -1547,14 +1476,15 @@ void CleanBoneIslands(std::vector<int>& assignments, const Eigen::MatrixXi& F, i
       islandID[u] = (int)islands.size();
       for (int v : adj[u])
       {
-        if (!visited[v] && assignments[v] == currentBone)
+        const int neighbor_bone = assignments[v];
+        if (!visited[v] && neighbor_bone == current_bone)
         {
           visited[v] = true;
           q.push(v);
         }
       }
     }
-    islandBoneType.push_back(currentBone);
+    islandBoneType.push_back(current_bone);
     islands.push_back(component);
   }
 
@@ -1596,264 +1526,667 @@ void CleanBoneIslands(std::vector<int>& assignments, const Eigen::MatrixXi& F, i
   }
 }
 
-// Represents a frame's motion profile
-struct FrameSignature
+std::vector<int> FinalMergeProposals_Deterministic(int numVertices,
+                                                   const std::vector<Eigen::Matrix3Xd>& allPoses,
+                                                   const Eigen::Matrix3Xd& restPose,
+                                                   const Eigen::MatrixXi& F)
 {
-  int frame_id;
-  Eigen::VectorXd signature;  // Flattened normalized displacements
-};
+  const int numFrames = static_cast<int>(allPoses.size());
 
-/**
- * Creates a normalized motion signature for every frame.
- * We subtract the rest pose to isolate movement.
- */
-std::vector<FrameSignature> GenerateMotionSignatures(const std::vector<Eigen::Matrix3Xd>& allPoses,
-                                                     const Eigen::Matrix3Xd& restPose)
-{
-  const int numFrames = allPoses.size();
-  const int numVerts = restPose.cols();
-  std::vector<FrameSignature> signatures(numFrames);
-
-  for (int f = 0; f < numFrames; ++f)
-  {
-    signatures[f].frame_id = f;
-
-    // 1. Calculate displacement from rest pose
-    Eigen::Matrix3Xd displacement = allPoses[f] - restPose;
-
-    // 2. Flatten to a 1D vector (3 * N)
-    Eigen::VectorXd flat = Eigen::Map<const Eigen::VectorXd>(displacement.data(), numVerts * 3);
-
-    // 3. Normalize: This ensures "subtle neck tilt" and "big run"
-    // are compared by WHERE the motion happens, not just how big it is.
-    double norm = flat.norm();
-    if (norm > 1e-8)
-    {
-      signatures[f].signature = flat / norm;
-    }
-    else
-    {
-      signatures[f].signature = Eigen::VectorXd::Zero(numVerts * 3);
-    }
-  }
-  return signatures;
-}
-
-/**
- * Clusters frames based on a similarity threshold (0.0 to 1.0).
- *
- * @return A map where:
- *   - Key (int): The Unique Bucket ID.
- *   - Value (std::vector<int>): A list of Frame IDs that belong to this bucket.
- *
- * Example:
- *   Bucket 0 might contain [0, 1, 2, 50, 51] (The "Thinking" idle)
- *   Bucket 1 might contain [10, 11, 12, 13] (The "Run" cycle)
- */
-std::map<int, std::vector<int>> AutoBucketizeFrames(const std::vector<FrameSignature>& signatures,
-                                                    double similarity_threshold = 0.9)
-{
-  // Key: Bucket Index, Value: List of Frame IDs
-  std::map<int, std::vector<int>> buckets;
-  if (signatures.empty())
-    return buckets;
-
-  // "Leaders" are the reference signatures that define what a bucket "looks" like.
-  std::vector<Eigen::VectorXd> leader_signatures;
-
-  for (const auto& sig : signatures)
-  {
-    bool assigned = false;
-
-    for (size_t l = 0; l < leader_signatures.size(); ++l)
-    {
-      // Since signatures are normalized, the Dot Product is the Cosine Similarity.
-      // 1.0 = Perfect match, 0.0 = Completely different motion.
-      double similarity = sig.signature.dot(leader_signatures[l]);
-
-      if (similarity > similarity_threshold)
-      {
-        buckets[static_cast<int>(l)].push_back(sig.frame_id);
-        assigned = true;
-        break;
-      }
-    }
-
-    if (!assigned)
-    {
-      // No existing bucket matches this motion. Start a new one!
-      int new_id = static_cast<int>(leader_signatures.size());
-      leader_signatures.push_back(sig.signature);
-      buckets[new_id].push_back(sig.frame_id);
-    }
-  }
-  return buckets;
-}
-
-/**
- * Executes the splitting logic independently for each motion bucket.
- * This isolates subtle movements (like head tilts) from loud movements (like running).
- */
-std::map<int, std::vector<int>>
-GenerateBucketProposals(const std::map<int, std::vector<int>>& frame_buckets,
-                        const std::vector<Eigen::Matrix3Xd>& allPoses,
-                        const Eigen::Matrix3Xd& restPose, const SimpleGeodesic::HeatGeodesicsData&)
-{
-  std::map<int, std::vector<int>> proposals;
-
-  for (auto const& [bucket_id, frame_ids] : frame_buckets)
-  {
-    // 1. Extract only the frames belonging to this specific motion type
-    std::vector<Eigen::Matrix3Xd> bucket_poses;
-    for (int f_id : frame_ids)
-    {
-      bucket_poses.push_back(allPoses[f_id]);
-    }
-
-    // 2. Run the Adaptive Splitter on this subset.
-    // We use a tighter tolerance because the "noise" of other animations is gone.
-    const double bucket_tolerance = 0.005;
-    proposals[bucket_id] = CalculateVertexGroupsAdaptive(bucket_poses, restPose, bucket_tolerance);
-
-    INFO_LOG_FMT(VIDEO, "Bucket {}: Produced {} unique motion clusters for {} frames.", bucket_id,
-                 bucket_poses.size(), frame_ids.size());
-  }
-  return proposals;
-}
-
-/**
- * Merges multiple animation-specific bone proposals into a single global bone map.
- *
- * Logic: Every vertex gets a "Signature" based on its bone ID in every bucket.
- * If two vertices have the exact same signature, they are the same bone.
- * If they differ in even ONE bucket, they are split into separate bones.
- *
- * @return A vector of final bone assignments (one per vertex).
- */
-std::vector<int> FinalMergeProposals(int numVertices,
-                                     const std::map<int, std::vector<int>>& bucket_proposals)
-{
-  // Map of "Motion Signature" -> "New Unique Bone ID"
-  std::map<std::string, int> signature_to_final_id;
-  std::vector<int> final_assignments(numVertices);
-  int next_bone_id = 0;
-
+  // 1. Pre-calculate Motion Signatures (Displacement Trajectories)
+  // We normalize each signature to make the Dot Product equal to Correlation.
+  Eigen::MatrixXd signatures(numVertices, numFrames * 3);
   for (int i = 0; i < numVertices; ++i)
   {
-    // Build the signature. The map iteration order (bucket_id 0, 1, 2...)
-    // ensures consistency across all vertices.
-    std::string signature = "";
-    for (auto const& [bucket_id, assignments] : bucket_proposals)
+    Eigen::VectorXd traj(numFrames * 3);
+    for (int f = 0; f < numFrames; ++f)
     {
-      signature += std::to_string(assignments[i]) + "|";
+      traj.segment<3>(f * 3) = allPoses[f].col(i) - restPose.col(i);
     }
 
-    // If this specific combination of motions hasn't been seen, register it.
-    if (signature_to_final_id.find(signature) == signature_to_final_id.end())
-    {
-      signature_to_final_id[signature] = next_bone_id++;
-    }
-
-    final_assignments[i] = signature_to_final_id[signature];
+    // Add a tiny epsilon to the norm to prevent division by zero for static verts
+    double n = traj.norm();
+    if (n > 1e-9)
+      traj /= n;
+    signatures.row(i) = traj;
   }
 
-  INFO_LOG_FMT(VIDEO, "Merging complete. Discovered {} total bones across all animation buckets.",
-               next_bone_id);
-  return final_assignments;
-}
-
-/**
- * Reduces over-segmented bone groups into a stable, functional rig.
- *
- * Strategy:
- * 1. Topological Adjacency: Only attempts to merge bones that share a mesh edge.
- * 2. Motion Fingerprinting: Skips expensive SSE math if bone trajectories differ greatly.
- * 3. Priority Noise Reduction: Automatically absorbs "micro-bones" into neighbors.
- * 4. Union-Find Safety: Uses path compression (find_root) to prevent infinite remap loops.
- */
-std::vector<int>
-PruneAndMergeBones(const std::vector<int>& initial_assignments,
-                   const std::vector<Eigen::Matrix3Xd>& allPoses, const Eigen::Matrix3Xd& restPose,
-                   const Eigen::MatrixXi& F,        // Pass the faces for adjacency!
-                   double merge_tolerance = 0.005)  // Loosened from 0.0005 to catch more noise
-{
-  const int numVertices = static_cast<int>(initial_assignments.size());
-  int numBones = 0;
-  for (int b : initial_assignments)
-    numBones = std::max(numBones, b + 1);
-
-  // 1. Group indices by bone
-  std::vector<std::vector<int>> bone_to_indices(numBones);
-  for (int i = 0; i < numVertices; ++i)
-  {
-    bone_to_indices[initial_assignments[i]].push_back(i);
-  }
-
-  // 2. SPEED HACK: Build Adjacency Map
-  // Instead of comparing all 216 * 216 pairs, we only compare neighbors.
-  std::set<std::pair<int, int>> bone_neighbors;
-  for (int i = 0; i < F.rows(); ++i)
-  {
-    int b[3] = {initial_assignments[F(i, 0)], initial_assignments[F(i, 1)],
-                initial_assignments[F(i, 2)]};
-    for (int j = 0; j < 3; ++j)
-    {
-      int u = b[j], v = b[(j + 1) % 3];
-      if (u != v)
-        bone_neighbors.insert({std::min(u, v), std::max(u, v)});
-    }
-  }
-
-  // 3. Union-Find Helper
-  std::vector<int> bone_remap(numBones);
-  std::iota(bone_remap.begin(), bone_remap.end(), 0);
-  auto find_root = [&](int b) {
-    int root = b;
-    while (bone_remap[root] != root)
-      root = bone_remap[root];
-    return root;
+  // 2. Disjoint Set Union (DSU) to merge neighbors with high correlation
+  std::vector<int> parent(numVertices);
+  std::iota(parent.begin(), parent.end(), 0);
+  auto find_root = [&](int i) {
+    int r = i;
+    while (parent[r] != r)
+      r = parent[r];
+    return r;
   };
 
-  // 4. Compare only NEIGHBORING pairs
-  for (auto const& pair : bone_neighbors)
+  // Correlation Threshold: 0.999 is very strict (essentially same motion)
+  // Adjust to 0.995 if you still see tiny fragments in the face.
+  const double threshold = 0.999;
+
+  // Iterate through every edge in the mesh
+  for (int i = 0; i < F.rows(); ++i)
   {
-    int a = find_root(pair.first);
-    int b = find_root(pair.second);
-    if (a == b)
-      continue;
-
-    // YOUR ORIGINAL SSE LOGIC:
-    std::vector<int> combined = bone_to_indices[a];
-    combined.insert(combined.end(), bone_to_indices[b].begin(), bone_to_indices[b].end());
-
-    double error_a = CalculateRigidSSE_WorldSpace(bone_to_indices[a], allPoses, restPose);
-    double error_b = CalculateRigidSSE_WorldSpace(bone_to_indices[b], allPoses, restPose);
-    double error_combined = CalculateRigidSSE_WorldSpace(combined, allPoses, restPose);
-
-    double merge_cost = error_combined - (error_a + error_b);
-
-    if (merge_cost < merge_tolerance)
+    for (int j = 0; j < 3; ++j)
     {
-      INFO_LOG_FMT(VIDEO, "Merging bone {} into {}. Cost: {}", b, a, merge_cost);
-      bone_remap[b] = a;
-      bone_to_indices[a] = combined;  // Update 'a' so subsequent checks are accurate
-      bone_to_indices[b].clear();
+      int u = F(i, j);
+      int v = F(i, (j + 1) % 3);
+
+      int root_u = find_root(u);
+      int root_v = find_root(v);
+      if (root_u == root_v)
+        continue;
+
+      // Dot product of normalized signatures = Pearson Correlation
+      double correlation = signatures.row(u).dot(signatures.row(v));
+
+      if (correlation > threshold)
+      {
+        parent[root_u] = root_v;
+      }
     }
   }
 
-  // 5. Final Pass: Re-index
+  // 3. Compact IDs and Return
   std::vector<int> final_assignments(numVertices);
-  std::map<int, int> compact_map;
+  std::map<int, int> root_to_id;
   int next_id = 0;
   for (int i = 0; i < numVertices; ++i)
   {
-    int root = find_root(initial_assignments[i]);
-    if (compact_map.find(root) == compact_map.end())
-      compact_map[root] = next_id++;
-    final_assignments[i] = compact_map[root];
+    int r = find_root(i);
+    if (root_to_id.find(r) == root_to_id.end())
+    {
+      root_to_id[r] = next_id++;
+    }
+    final_assignments[i] = root_to_id[r];
   }
 
-  INFO_LOG_FMT(VIDEO, "Reduced {} bones to {} bones.", numBones, next_id);
+  INFO_LOG_FMT(VIDEO, "Merging complete. Discovered {} total bones across all animation buckets.",
+               next_id);
+
+  return final_assignments;
+}
+
+int CountSharedEdges(int b1, int b2, const std::vector<int>& assignments, const Eigen::MatrixXi& F)
+{
+  int shared = 0;
+  for (int i = 0; i < F.rows(); ++i)
+  {
+    int u = assignments[F(i, 0)], v = assignments[F(i, 1)], w = assignments[F(i, 2)];
+    if ((u == b1 && v == b2) || (u == b2 && v == b1))
+      shared++;
+    if ((v == b1 && w == b2) || (v == b2 && w == b1))
+      shared++;
+    if ((w == b1 && u == b2) || (w == b2 && u == b1))
+      shared++;
+  }
+  return shared;
+}
+
+std::vector<Eigen::Matrix3Xd> GetPosesForFrames(const std::vector<Eigen::Matrix3Xd>& allPoses,
+                                                const std::vector<int>& frames)
+{
+  std::vector<Eigen::Matrix3Xd> subset;
+  for (int f : frames)
+  {
+    subset.push_back(allPoses[f]);
+  }
+  return subset;
+}
+
+/**
+ * Calculates the "Worst Vertex Displacement" if two bone groups are unified.
+ *
+ * Logic:
+ * 1. Merges the two vertex sets.
+ * 2. For every frame of animation:
+ *    a. Centers the vertices to remove translation.
+ *    b. Uses SVD (Kabsch) to find the optimal rotation to align the
+ *       Rest Pose to the Current Pose.
+ *    c. Applies that rotation/translation back to the Rest Pose.
+ *    d. Measures the distance (error) for every vertex.
+ * 3. Returns the highest single-vertex error found across ALL frames.
+ *
+ * @return The Max Distance Error (MDE) in world units.
+ */
+double CalculateMaxMergeError(const std::vector<int>& indices1, const std::vector<int>& indices2,
+                              const std::vector<Eigen::Matrix3Xd>& allPoses,
+                              const Eigen::Matrix3Xd& restPose)
+{
+  std::vector<int> combined = indices1;
+  combined.insert(combined.end(), indices2.begin(), indices2.end());
+  if (combined.empty())
+    return 0.0;
+
+  const int N = (int)combined.size();
+  Eigen::Matrix3Xd P(3, N);
+  for (int i = 0; i < N; ++i)
+    P.col(i) = restPose.col(combined[i]);
+
+  Eigen::Vector3d p_mean = P.rowwise().mean();
+  Eigen::Matrix3Xd P_centered = P.colwise() - p_mean;
+
+  double maxMDE = 0.0;
+
+  for (const auto& pose : allPoses)
+  {
+    Eigen::Matrix3Xd Q(3, N);
+    for (int i = 0; i < N; ++i)
+      Q.col(i) = pose.col(combined[i]);
+
+    Eigen::Vector3d q_mean = Q.rowwise().mean();
+    Eigen::Matrix3Xd Q_centered = Q.colwise() - q_mean;
+
+    // Kabsch Algorithm for BEST rigid fit
+    Eigen::Matrix3d H = P_centered * Q_centered.transpose();
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(H, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3d R = svd.matrixV() * svd.matrixU().transpose();
+    if (R.determinant() < 0)
+    {
+      Eigen::Matrix3d V = svd.matrixV();
+      V.col(2) *= -1;
+      R = V * svd.matrixU().transpose();
+    }
+    Eigen::Vector3d T = q_mean - R * p_mean;
+
+    // Calculate the WORST vertex error in this frame
+    for (int i = 0; i < N; ++i)
+    {
+      Eigen::Vector3d target = Q.col(i);
+      Eigen::Vector3d solved = R * P.col(i) + T;
+      double err = (target - solved).norm();  // Euclidean distance error
+      if (err > maxMDE)
+        maxMDE = err;
+    }
+  }
+  return maxMDE;
+}
+
+struct MergeTask
+{
+  int u, v;
+  double mde;
+  std::vector<int> indicesU, indicesV, combined;
+};
+
+/**
+ * Scans the mesh triangles to find which bones are physically touching.
+ *
+ * Logic: An edge in a triangle is a "border" if its two vertices belong to
+ * different bones. This identifies all adjacent bone pairs.
+ *
+ * @param assignments The current bone ID for every vertex in the mesh.
+ * @param F The triangle face matrix (indices of vertices for every face).
+ * @return A set of unique pairs {ID_A, ID_B} where ID_A < ID_B.
+ */
+std::set<std::pair<int, int>> GetNeighborBonesSet(const std::vector<int>& assignments,
+                                                  const Eigen::MatrixXi& F)
+{
+  std::set<std::pair<int, int>> pairs;
+  for (int i = 0; i < F.rows(); ++i)
+  {
+    // A triangle is a "Meeting Room."
+    // Any bones present in this triangle are neighbors.
+    int b[3] = {assignments[F(i, 0)], assignments[F(i, 1)], assignments[F(i, 2)]};
+
+    // Check every pair in the triangle (0-1, 1-2, 2-0)
+    for (int j = 0; j < 3; ++j)
+    {
+      int next = (j + 1) % 3;
+      if (b[j] != b[next] && b[j] != -1 && b[next] != -1)
+      {
+        pairs.insert({std::min(b[j], b[next]), std::max(b[j], b[next])});
+      }
+    }
+  }
+  return pairs;
+}
+
+void ApplyMergeToAssignments(std::vector<int>& assignments, int fromID, int toID)
+{
+  for (int& b : assignments)
+  {
+    if (b == fromID)
+      b = toID;
+  }
+}
+
+/**
+ * Builds a list of all possible merge operations between neighboring bones.
+ *
+ * Logic:
+ * 1. Groups all vertices by their current Bone ID.
+ * 2. Finds all touching bone pairs via GetNeighborBonesSet.
+ * 3. Calculates the "Worst Case" Error (MDE) if those two bones became one.
+ */
+std::vector<MergeTask> BuildMergeTasks(const std::vector<int>& assignments,
+                                       const std::vector<Eigen::Matrix3Xd>& allPoses,
+                                       const Eigen::Matrix3Xd& restPose, const Eigen::MatrixXi& F)
+{
+  int numBones = 0;
+  for (int b : assignments)
+  {
+    numBones = std::max(numBones, b + 1);
+  }
+
+  std::vector<std::vector<int>> boneToIndices(numBones);
+  for (int i = 0; i < assignments.size(); ++i)
+  {
+    if (assignments[i] != -1)
+      boneToIndices[assignments[i]].push_back(i);
+  }
+
+  auto pairs = GetNeighborBonesSet(assignments, F);  // Triangle-based neighbor finder
+  std::vector<MergeTask> tasks;
+  for (auto const& p : pairs)
+  {
+    if (boneToIndices[p.first].empty() || boneToIndices[p.second].empty())
+      continue;
+
+    const double mde =
+        CalculateMaxMergeError(boneToIndices[p.first], boneToIndices[p.second], allPoses, restPose);
+
+    MergeTask task;
+    task.u = p.first;
+    task.v = p.second;
+    task.mde = mde;
+    task.indicesU = boneToIndices[p.first];
+    task.indicesV = boneToIndices[p.second];
+    task.combined = task.indicesU;
+    task.combined.insert(task.combined.end(), task.indicesV.begin(), task.indicesV.end());
+
+    tasks.push_back(task);
+  }
+  return tasks;
+}
+
+/**
+ * @brief Solves for the optimal rigid body transformation (Rotation + Translation).
+ *
+ * Implements the Orthogonal Procrustes problem using SVD. Finds the 4x4 matrix
+ * that minimizes the distance between the restPose and a set of target poses
+ * for a specific subset of vertices.
+ *
+ * @return A vector of 4x4 matrices (one per frame in the bucket).
+ */
+std::vector<Eigen::Matrix4d> ComputeRigidTransforms(const std::vector<int>& indices,
+                                                    const std::vector<Eigen::Matrix3Xd>& poses,
+                                                    const Eigen::Matrix3Xd& restPose)
+{
+  std::vector<Eigen::Matrix4d> transforms;
+  transforms.reserve(poses.size());
+
+  // 1. Manually extract and center the rest points
+  // (This replaces restPose(Eigen::all, indices))
+  Eigen::Matrix3Xd source(3, indices.size());
+  for (int i = 0; i < indices.size(); ++i)
+  {
+    source.col(i) = restPose.col(indices[i]);
+  }
+
+  Eigen::Vector3d centroid_s = source.rowwise().mean();
+  Eigen::Matrix3Xd s_centered = source.colwise() - centroid_s;
+
+  for (const auto& pose : poses)
+  {
+    // 2. Manually extract and center the animated points
+    Eigen::Matrix3Xd target(3, indices.size());
+    for (int i = 0; i < indices.size(); ++i)
+    {
+      target.col(i) = pose.col(indices[i]);
+    }
+
+    Eigen::Vector3d centroid_t = target.rowwise().mean();
+    Eigen::Matrix3Xd t_centered = target.colwise() - centroid_t;
+
+    // 3. SVD for optimal rotation
+    Eigen::Matrix3d H = s_centered * t_centered.transpose();
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(H, Eigen::ComputeFullU | Eigen::ComputeFullV);
+
+    Eigen::Matrix3d R = svd.matrixV() * svd.matrixU().transpose();
+
+    // 4. Calculate translation
+    Eigen::Vector3d t = centroid_t - (R * centroid_s);
+
+    // 5. Build the matrix
+    Eigen::Matrix4d m4 = Eigen::Matrix4d::Identity();
+    m4.block<3, 3>(0, 0) = R;
+    m4.block<3, 1>(0, 3) = t;
+
+    transforms.push_back(m4);
+  }
+  return transforms;
+}
+
+/**
+ * @brief Measures the physical deviation of a vertex cluster from ideal rigidity.
+ *
+ * Calculates the Maximum Distance Error (MDE) in world units. It determines the
+ * single worst vertex "drift" across all frames, providing a concrete metric
+ * (e.g., 5mm) to audit potential bone merges.
+ */
+double CalculateMDE(const std::vector<int>& indices, const std::vector<Eigen::Matrix3Xd>& poses,
+                    const Eigen::Matrix3Xd& restPose)
+{
+  double maxError = 0.0;
+
+  // 1. Find the best rigid transform for this cluster across these specific poses
+  // This is your Procrustes/SVD fit we used before
+  std::vector<Eigen::Matrix4d> transforms = ComputeRigidTransforms(indices, poses, restPose);
+
+  // 2. Check every vertex in every frame of this bucket
+  for (size_t f = 0; f < poses.size(); ++f)
+  {
+    for (int vIdx : indices)
+    {
+      Eigen::Vector3d restP = restPose.col(vIdx);
+      Eigen::Vector3d animatedP = poses[f].col(vIdx);
+
+      // Transform the rest point by the calculated bone matrix
+      Eigen::Vector3d predictedP = (transforms[f] * restP.homogeneous()).head<3>();
+
+      // Find the Euclidean distance (the "drift")
+      double dist = (animatedP - predictedP).norm();
+      if (dist > maxError)
+        maxError = dist;
+    }
+  }
+  return maxError;
+}
+
+/**
+ * @brief Merges vertex clusters only if they remain rigid across all motion types.
+ *
+ * Acts as a temporal judge. Instead of using abstract ratios, it performs a
+ * "Bucket Veto": a merge is rejected if any single motion bucket (like a
+ * facial twitch) causes the MDE to exceed the rigidityThreshold.
+ */
+std::vector<int> BucketConsensusMerger(
+    std::vector<int> assignments, const std::vector<std::vector<Eigen::Matrix3Xd>>& bucket_data,
+    const std::vector<Eigen::Matrix3Xd>& allPoses, const Eigen::Matrix3Xd& restPose,
+    const Eigen::MatrixXi& F, int max_gpu_skinned_id, double rigidityThreshold = 0.005)
+{
+  bool changed = true;
+  while (changed)
+  {
+    changed = false;
+
+    // 1. Get the tasks using your EXISTING BuildMergeTasks
+    auto tasks = BuildMergeTasks(assignments, allPoses, restPose, F);
+
+    // 2. Sort so we handle the "Stoniest" (most rigid) merges first
+    std::sort(tasks.begin(), tasks.end(), [](auto& a, auto& b) { return a.mde < b.mde; });
+
+    std::set<int> mergedThisBatch;
+
+    for (auto const& t : tasks)
+    {
+      if (mergedThisBatch.count(t.u) || mergedThisBatch.count(t.v))
+        continue;
+
+      bool u_is_gpu_skinned = (t.u <= max_gpu_skinned_id);
+      bool v_is_gpu_skinned = (t.v <= max_gpu_skinned_id);
+
+      // Ignore any that are gpu skinned, we know they are correct!
+      if (u_is_gpu_skinned || v_is_gpu_skinned)
+      {
+        continue;
+      }
+
+      // --- THE BUCKET VETO ---
+      // Instead of a "Ratio," we check the MDE in every motion bucket.
+      bool isRigidInAllBuckets = true;
+      for (const auto& poses_in_bucket : bucket_data)
+      {
+        // Use the MDE function we just defined
+        double bucket_mde = CalculateMDE(t.combined, poses_in_bucket, restPose);
+
+        if (bucket_mde > rigidityThreshold)
+        {
+          isRigidInAllBuckets = false;
+          break;
+        }
+      }
+
+      if (isRigidInAllBuckets)
+      {
+        ApplyMergeToAssignments(assignments, t.u, t.v);
+        mergedThisBatch.insert(t.u);
+        mergedThisBatch.insert(t.v);
+        changed = true;
+      }
+    }
+  }
+
+  // Reduce the bone range
+  std::map<int, int> oldToNew;
+  int nextID = 0;
+
+  // PASS 1: Lock in the Simulation IDs (0 to max_sim_id)
+  // We map them to themselves to "reserve" their spots.
+  for (int i = 0; i <= max_gpu_skinned_id; ++i)
+  {
+    oldToNew[i] = i;
+  }
+  nextID = max_gpu_skinned_id + 1;
+
+  // PASS 2: Map the Discovered IDs to a contiguous range
+  for (int& id : assignments)
+  {
+    if (id == -1)
+      continue;
+
+    // If it's a Discovered ID (> max_sim_id) and we haven't seen it yet...
+    if (id > max_gpu_skinned_id && oldToNew.find(id) == oldToNew.end())
+    {
+      oldToNew[id] = nextID++;
+    }
+
+    id = oldToNew[id];
+  }
+  return assignments;
+}
+
+std::map<int, std::set<int>> GetNeighborBones(const std::vector<int>& assignments,
+                                              const Eigen::MatrixXi& F)
+{
+  std::map<int, std::set<int>> neighbors;
+  for (int i = 0; i < F.rows(); ++i)
+  {
+    int b1 = assignments[F(i, 0)];
+    int b2 = assignments[F(i, 1)];
+    int b3 = assignments[F(i, 2)];
+    if (b1 != b2)
+    {
+      neighbors[b1].insert(b2);
+      neighbors[b2].insert(b1);
+    }
+    if (b2 != b3)
+    {
+      neighbors[b2].insert(b3);
+      neighbors[b3].insert(b2);
+    }
+    if (b3 != b1)
+    {
+      neighbors[b3].insert(b1);
+      neighbors[b1].insert(b3);
+    }
+  }
+  return neighbors;
+}
+
+void PrintMDEAnatomicalDiagnostic(const std::vector<int>& assignments,
+                                  const std::vector<Eigen::Matrix3Xd>& allPoses,
+                                  const Eigen::Matrix3Xd& restPose,
+                                  const SimpleGeodesic::HeatGeodesicsData& heat_data)
+{
+  int numBones = 0;
+  for (int b : assignments)
+    numBones = std::max(numBones, b + 1);
+
+  std::vector<std::vector<int>> boneToIndices(numBones);
+  for (int i = 0; i < assignments.size(); ++i)
+    boneToIndices[assignments[i]].push_back(i);
+
+  int rootID = IdentifyAnatomicalRoot_V2(assignments, heat_data);
+
+  // 2. Build ROOT-RELATIVE Trajectories
+  // This is the "Mr. Fantastic" killer.
+  std::vector<Eigen::VectorXd> relativeTrajs(numBones);
+  std::vector<double> relSSE(numBones, 0.0);
+
+  // Get the Root's global motion first
+  Eigen::Matrix3Xd rootMotion = Eigen::Matrix3Xd::Zero(3, allPoses.size());
+  for (size_t f = 0; f < allPoses.size(); ++f)
+  {
+    Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+    for (int idx : boneToIndices[rootID])
+      centroid += allPoses[f].col(idx);
+    rootMotion.col(f) = centroid / (double)boneToIndices[rootID].size();
+  }
+
+  for (int b = 0; b < numBones; ++b)
+  {
+    if (boneToIndices[b].empty())
+      continue;
+    Eigen::VectorXd t = Eigen::VectorXd::Zero(allPoses.size() * 3);
+    double totalSqDist = 0;
+
+    for (size_t f = 0; f < allPoses.size(); ++f)
+    {
+      Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+      for (int idx : boneToIndices[b])
+      {
+        Eigen::Vector3d pos = allPoses[f].col(idx);
+        centroid += pos;
+
+        // Displacement from rest position
+        totalSqDist += (pos - restPose.col(idx)).squaredNorm();
+      }
+      centroid /= (double)boneToIndices[b].size();
+
+      // SUBTRACT ROOT MOTION: Now we only see how the bone moves
+      // relative to the hips!
+      t.segment<3>(f * 3) = centroid - rootMotion.col(f);
+    }
+    double n = t.norm();
+    if (n > 1e-9)
+      t /= n;
+    relativeTrajs[b] = t;
+
+    // SSE per vertex per frame
+    relSSE[b] = totalSqDist / (double)(boneToIndices[b].size() * allPoses.size());
+  }
+
+  auto neighbors = GetNeighborBones(assignments, heat_data.F);
+
+  INFO_LOG_FMT(VIDEO, "--- MDE STABILITY DIAGNOSTIC ---");
+  INFO_LOG_FMT(VIDEO, "{:<4} {:<6} {:<10} {:<10} {:<10} {:<10} {:<8} {:<12}", "ID", "Verts",
+               "Rel.SSE", "Self-MDE", "Best-MDE", "Ratio", "GeoAvg", "Role");
+
+  for (int b = 0; b < numBones; ++b)
+  {
+    if (boneToIndices[b].empty())
+      continue;
+
+    // 1. Internal Rigidity (How much this bone stretches on its own)
+    double selfMDE = CalculateMaxMergeError(boneToIndices[b], {}, allPoses, restPose);
+    double selfSSE = CalculateRigidSSE_WorldSpace(boneToIndices[b], allPoses, restPose);
+
+    double bestMDE = 1.0;
+    double bestRatio = 99.9;  // Default high
+
+    for (int n : neighbors[b])
+    {
+      double mde = CalculateMaxMergeError(boneToIndices[b], boneToIndices[n], allPoses, restPose);
+      if (mde < bestMDE)
+      {
+        bestMDE = mde;
+
+        // Calculate the Merge Ratio for this specific neighbor
+        double neighborSSE = CalculateRigidSSE_WorldSpace(boneToIndices[n], allPoses, restPose);
+        std::vector<int> combined = boneToIndices[b];
+        combined.insert(combined.end(), boneToIndices[n].begin(), boneToIndices[n].end());
+        double combinedSSE = CalculateRigidSSE_WorldSpace(combined, allPoses, restPose);
+
+        bestRatio = combinedSSE / (selfSSE + neighborSSE + 1e-9);
+      }
+    }
+
+    double relCorr = relativeTrajs[b].dot(relativeTrajs[rootID]);
+
+    double minG = 1e9, maxG = -1e9, sumG = 0;
+    for (int idx : boneToIndices[b])
+    {
+      double g = heat_data.geo_from_center(idx);
+      minG = std::min(minG, g);
+      maxG = std::max(maxG, g);
+      sumG += g;
+    }
+    double avgG = sumG / (double)boneToIndices[b].size();
+    double spanG = maxG - minG;
+
+    std::string role = (b == rootID)    ? "ANCHOR" :
+                       (relCorr > 0.99) ? "STIFF_BODY" :
+                       (spanG > 0.4)    ? "LONG_LIMB" :
+                                          "JOINT";
+
+    INFO_LOG_FMT(VIDEO, "{:<4} {:<6} {:<10.6f} {:<10.6f} {:<10.6f} {:<10.2f} {:<8.3f} {:<12}", b,
+                 boneToIndices[b].size(), relSSE[b], selfMDE, bestMDE, bestRatio, avgG, role);
+  }
+}
+
+/**
+ * @brief Unifies GPU skinned IDs with Discovered Bone IDs.
+ *
+ * @param sim_ids The IDs provided per-vertex by the gpu skinning (-1 if none).
+ * @param discovered_shards The high-resolution shards found by our algorithm.
+ * @return A unified assignment vector where GPU skinned IDs are preserved and
+ *         Discovered IDs are offset to avoid collisions.
+ */
+std::vector<int> ResolveHybridAssignments(const std::vector<int>& gpu_skinned_ids,
+                                          const std::vector<int>& discovered_shards,
+                                          const Eigen::VectorXi& SVJ, int* max_gpu_skinned_id)
+{
+  if (gpu_skinned_ids.empty())
+    return discovered_shards;
+
+  const int welded_assignment_count = discovered_shards.size();
+  std::vector<int> final_assignments(welded_assignment_count, -1);
+
+  // Find the highest ID used by the gpu skinned to set our "Safety Offset"
+  *max_gpu_skinned_id = -1;
+  for (int id : gpu_skinned_ids)
+  {
+    if (id > *max_gpu_skinned_id)
+      *max_gpu_skinned_id = id;
+  }
+
+  // Any discovered ID will start after the gpu skinned range
+  int id_offset = *max_gpu_skinned_id + 1;
+
+  for (std::size_t i = 0; i < gpu_skinned_ids.size(); ++i)
+  {
+    const int new_index = SVJ[i];
+    if (final_assignments[new_index] != -1)
+    {
+      INFO_LOG_FMT(VIDEO, "Index {} is not empty on the mesh!", new_index);
+      continue;
+    }
+
+    if (gpu_skinned_ids[i] != -1)
+    {
+      // Priority 1: Respect the gpu skinned ID
+      final_assignments[new_index] = gpu_skinned_ids[i];
+    }
+    else
+    {
+      // Priority 2: Use our discovered shard, offset to prevent collision
+      final_assignments[new_index] = discovered_shards[new_index] + id_offset;
+    }
+  }
+
   return final_assignments;
 }
 
@@ -1862,45 +2195,45 @@ PruneAndMergeBones(const std::vector<int>& initial_assignments,
  */
 std::vector<int> GenerateRigFromMotion(const std::vector<Eigen::Matrix3Xd>& allPoses,
                                        const Eigen::Matrix3Xd& restPose,
-                                       const SimpleGeodesic::HeatGeodesicsData& heat_data)
+                                       const SimpleGeodesic::HeatGeodesicsData& heat_data,
+                                       const std::vector<int>& gpu_skinned_ids,
+                                       const Eigen::VectorXi& SVJ)
 {
-  // 1. PHASE ONE: Signature Generation
-  // Normalizes all frames so subtle motions (breathing) match the intensity of loud ones
-  // (punching).
-  auto signatures = GenerateMotionSignatures(allPoses, restPose);
-
-  // 2. PHASE TWO: Auto-Bucketization
   // Discovers how many "distinct" animations are in the capture (Ninja flips, thinking, etc).
-  // Similarity of 0.9 is a good "high sensitivity" start.
-  auto frame_buckets = AutoBucketizeFrames(signatures, 0.9);
+  auto frame_buckets = AdaptiveTimelineSplitter(allPoses, restPose);
   INFO_LOG_FMT(VIDEO, "Detected {} distinct motion buckets.", frame_buckets.size());
 
-  // 3. PHASE THREE: Independent Proposals
-  // Each bucket proposes its own internal bones based ONLY on its local motion.
-  // This is where the Neck finally gets its own bone because the "Idle" bucket sees it.
-  auto proposals = GenerateBucketProposals(frame_buckets, allPoses, restPose, heat_data);
+  // 1. Group the animation into motions (Walk, Jump, Reach)
+  std::vector<std::vector<Eigen::Matrix3Xd>> bucket_data;
+  for (auto const& [id, frames] : frame_buckets)
+  {
+    bucket_data.push_back(GetPosesForFrames(allPoses, frames));
+  }
 
-  // 4. PHASE FOUR: The "Union" Merge
-  // Combines all bucket proposals into a high-resolution "Signature Map".
-  // This will likely over-segment (e.g., 80 bones), but it won't MISS any joints.
-  auto raw_assignments = FinalMergeProposals(restPose.cols(), proposals);
+  // 2. Generate initial "Dirty" shards (e.g. from the first bucket or all poses)
+  auto initial_shards =
+      FinalMergeProposals_Deterministic(restPose.cols(), allPoses, restPose, heat_data.F);
 
-  // 5. PHASE FIVE: SSE Pruning (The Skeptic)
-  // Collapses "mathematical noise" bones back together if they move identically across ALL
-  // frames. This is your safety net against "patchy" micro-bones.
-  double pruning_tolerance = 0.0005;  // Tight tolerance to keep the neck!
-  auto pruned_assignments =
-      PruneAndMergeBones(raw_assignments, allPoses, restPose, heat_data.F, pruning_tolerance);
+  int max_gpu_skinned_id = -1;
+  auto resolved_assignments =
+      ResolveHybridAssignments(gpu_skinned_ids, initial_shards, SVJ, &max_gpu_skinned_id);
+
+  // 3. THE BUCKET MERGE: This will collapse the bicep clumps but keep the elbow
+  auto final_grouping = BucketConsensusMerger(resolved_assignments, bucket_data, allPoses, restPose,
+                                              heat_data.F, max_gpu_skinned_id, 0.015);
 
   // 6. PHASE SIX: Final Sanitization
   // Use your existing BFS "Island Cleaner" to ensure bones are contiguous.
   int final_bone_count = 0;
-  for (int b : pruned_assignments)
+  for (int b : final_grouping)
     final_bone_count = std::max(final_bone_count, b + 1);
 
-  CleanBoneIslands(pruned_assignments, heat_data.F, restPose.cols(), final_bone_count);
+  CleanBoneIslands(final_grouping, heat_data.F, restPose.cols(), final_bone_count,
+                   max_gpu_skinned_id);
 
-  return pruned_assignments;
+  PrintMDEAnatomicalDiagnostic(final_grouping, allPoses, restPose, heat_data);
+
+  return final_grouping;
 }
 
 /**
@@ -2276,17 +2609,9 @@ void ExportRigBinary(
     const std::vector<Eigen::Vector3d>& bone_centers,
     const std::map<GraphicsModSystem::DrawCallID, GraphicsModEditor::VertexGroupDumper::FinalData>&
         draw_call_to_data,
-    const Eigen::Vector3d& mesh_centroid, double mesh_scale)
+    const std::map<int, int>& global_id_to_gpu_skinning_id)
 {
   GraphicsModEditor::ExporterSkinningRig export_rig;
-
-  // 1. Convert Global Welded Cage
-  // If V_welded is [3 x N], .col(i) is correct.
-  export_rig.runtime_rig.welded_positions.reserve(V_welded.cols());
-  for (int i = 0; i < V_welded.cols(); ++i)
-  {
-    export_rig.runtime_rig.welded_positions.push_back(V_welded.col(i).cast<float>());
-  }
 
   // 2. Bone Centers & Weights
   export_rig.global_weights = vertex_influences;
@@ -2315,6 +2640,7 @@ void ExportRigBinary(
     VideoCommon::ChunkRigData& chunk_rig = export_rig.runtime_rig.draw_call_rig_details[draw_call];
     chunk_rig.draw_call_id = draw_call;
 
+    std::unordered_map<int, VideoCommon::LocalBoneGroup> aggregator;
     for (u32 local_i = 0; local_i < v_count; ++local_i)
     {
       int welded_idx = local_svj[local_i];
@@ -2328,8 +2654,18 @@ void ExportRigBinary(
         if (w > 0.1f)
         {
           int b_id = inf.bone_ids[k];
-          auto& group = chunk_rig.bone_groups[b_id];
-          group.bone_id = b_id;
+          auto& group = aggregator[b_id];
+          group.global_bone_id = b_id;
+
+          if (const auto iter = global_id_to_gpu_skinning_id.find(b_id);
+              iter != global_id_to_gpu_skinning_id.end())
+          {
+            group.gpu_skinned_id = iter->second;
+          }
+          else
+          {
+            group.gpu_skinned_id = -1;
+          }
 
           // PAIR CORRESPONDENCE:
           // We need the moving vertex (local_i) and the rest vertex (welded_idx)
@@ -2340,12 +2676,13 @@ void ExportRigBinary(
       }
     }
 
+    for (auto& [id, group] : aggregator)
+    {
+      chunk_rig.bones.push_back(std::move(group));
+    }
+
     global_v_offset += v_count;
   }
-
-  // The scale/centroid
-  export_rig.runtime_rig.welded_rig_scale = static_cast<float>(mesh_scale);
-  export_rig.runtime_rig.welded_rig_centroid = mesh_centroid.cast<float>();
 
   GraphicsModEditor::ExporterSkinningRig::ToBinary(file_data, export_rig);
 }
@@ -2379,6 +2716,8 @@ void VertexGroupDumper::AddDataToRecording(GraphicsModSystem::DrawCallID draw_ca
 
     if (data.original_vertex_count == 0)
       return;
+
+    data.gpu_skinning_ids = GetGPUSkinningIDs(draw_data);
 
     if (draw_data.uid->rasterization_state.primitive == PrimitiveType::TriangleStrip)
     {
@@ -2582,53 +2921,19 @@ void VertexGroupDumper::Save()
     return;
   }
 
-  /**
-   * @brief The Error Budget (Tolerance) for bone creation.
-   *
-   * How it works:
-   * The algorithm splits the mesh into bones until the Total Squared Error (SSE)
-   * of the reconstructed animation falls below this value.
-   *
-   * Range Guide (for a mesh scaled to 1.0 diagonal):
-   * - 0.001 to 0.01: HIGH DETAIL. Produces 30-50 bones. (Fingers, facial features).
-   * - 0.01 to 0.1: BALANCED. Produces 15-25 bones. (Standard game characters).
-   * - 0.1 to 0.5: LOW DETAIL. Produces 5-10 bones. (LODs or background props).
-   *
-   * Note: If your mesh isn't scaled to 1.0, this value must be multiplied
-   * by (scale^2) to remain effective.
-   */
-  // const double tolerance = 0.005;
-  auto clean_grouping = GenerateRigFromMotion(reassembled_data, reassembled_data[0], heat_data);
+  // Get the global sim IDs from the UN-WELDED stitched buffer
+  std::map<int, int> global_id_to_gpu_skinning_id;
+  const auto stitched_gpu_skinning_ids =
+      GetGlobalGPUSkinningIDs(m_draw_call_to_data, &global_id_to_gpu_skinning_id);
+
+  auto clean_grouping = GenerateRigFromMotion(reassembled_data, reassembled_data[0], heat_data,
+                                              stitched_gpu_skinning_ids, SVJ);
 
   int bone_count = 0;
   for (int id : clean_grouping)
   {
     bone_count = std::max(bone_count, id + 1);
   }
-
-  /*{
-    const std::string path_prefix =
-        File::GetUserPath(D_DUMP_IDX) + SConfig::GetInstance().GetGameID();
-
-    const std::time_t start_time = std::time(nullptr);
-    const auto local_time = Common::LocalTime(start_time);
-    if (!local_time)
-      return;
-
-    const std::string base_name = fmt::format("{}_{:%Y-%m-%d_%H-%M-%S}", path_prefix, *local_time);
-
-    const auto weights = ComputeHarmonicWeights(clean_grouping, reassembled_data[0], SF,
-                                                reassembled_data, heat_data, bone_count);
-    const auto influences = FindTopInfluences(weights);
-
-    const auto bone_groups = ReconstructGroups(clean_grouping, bone_count);
-    const auto bone_centers =
-        ComputeBoneRestPositions(bone_groups, reassembled_data, reassembled_data[0]);
-    ExportToGLTF(fmt::format("{}_bones_before_clean.gltf", base_name), reassembled_data[0], SF,
-                 bone_centers, influences);
-  }
-
-  CleanBoneIslands(clean_grouping, SF, reassembled_data[0].cols(), bone_count);*/
 
   const std::string path_prefix =
       File::GetUserPath(D_DUMP_IDX) + SConfig::GetInstance().GetGameID();
@@ -2652,6 +2957,6 @@ void VertexGroupDumper::Save()
 
   File::IOFile outbound_file(fmt::format("{}.rig", base_name), "wb");
   ExportRigBinary(&outbound_file, reassembled_data[0], SVJ, influences, bone_centers,
-                  m_draw_call_to_data, mesh_centroid, mesh_scale);
+                  m_draw_call_to_data, global_id_to_gpu_skinning_id);
 }
 }  // namespace GraphicsModEditor
