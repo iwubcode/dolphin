@@ -569,7 +569,7 @@ std::array<WeldedEdge, 3> GetEdges(const DraftTriangle& tri)
 
 void CalculateMeshData(const NativeMeshData& native_mesh_data,
                        const VideoCommon::MeshData& reference_mesh_data, u32 components_to_copy,
-                       const std::optional<ExporterSkinningRig>& cpu_skinning_rig,
+                       const std::optional<ExporterSkinningRig>& skinning_rig,
                        VideoCommon::MeshData* final_mesh_data)
 {
   VecToIDConverter vec_converter;
@@ -712,35 +712,35 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
         ERROR_LOG_FMT(VIDEO, "Closest index 2 not found?");
       }
 
-      if (cpu_skinning_rig)
+      if (skinning_rig)
       {
-        const auto svj_iter = cpu_skinning_rig->draw_call_to_local_svj.find(draw_call);
-        if (svj_iter == cpu_skinning_rig->draw_call_to_local_svj.end())
+        const auto svj_iter = skinning_rig->draw_call_to_local_svj.find(draw_call);
+        if (svj_iter == skinning_rig->draw_call_to_local_svj.end())
         {
-          ERROR_LOG_FMT(VIDEO, "CPU skinning local_svj not found for draw call");
+          ERROR_LOG_FMT(VIDEO, "Skinning local_svj not found for draw call");
           continue;
         }
         const u16 welded_i0 = svj_iter->second[triangle.native_indices[0]];
-        replacement_weights[id0] = cpu_skinning_rig->global_weights[welded_i0];
+        replacement_weights[id0] = skinning_rig->global_weights[welded_i0];
 
         const u16 welded_i1 = svj_iter->second[triangle.native_indices[1]];
-        replacement_weights[id1] = cpu_skinning_rig->global_weights[welded_i1];
+        replacement_weights[id1] = skinning_rig->global_weights[welded_i1];
 
         const u16 welded_i2 = svj_iter->second[triangle.native_indices[2]];
-        replacement_weights[id2] = cpu_skinning_rig->global_weights[welded_i2];
+        replacement_weights[id2] = skinning_rig->global_weights[welded_i2];
       }
     }
   }
 
-  // If we are CPU skinning, we need to copy
+  // If we are skinning, we need to copy
   // the skinning data from the capture step
   // over to the final mesh data.  The weights/bones
   // for the replacement mesh will be handled separately
-  if (cpu_skinning_rig)
+  if (skinning_rig)
   {
-    final_mesh_data->m_cpu_skinning_rig = cpu_skinning_rig->runtime_rig;
+    final_mesh_data->m_skinning_rig = skinning_rig->runtime_rig;
 
-    // The CPU skinning logic also needs the original positional data
+    // The skinning logic also needs the original positional data
     // that represents the rest pose, this is so that we can compare
     // the moving original mesh to the rest pose to determine movement
     for (const auto& [draw_call, data] : native_mesh_data.m_draw_call_to_chunk)
@@ -750,11 +750,19 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
         const auto pos_transformed = data.positions_transformed[i];
         const auto inverse_transform = data.position_inverse_transforms[i];
 
-        const auto vertex_position_transformed = inverse_transform.Transform(pos_transformed, 1);
+        if (data.vertex_declaration.posmtx.enable)
+        {
+          final_mesh_data->m_original_positions[draw_call].push_back(
+              Eigen::Vector3f(pos_transformed.x, pos_transformed.y, pos_transformed.z));
+        }
+        else
+        {
+          const auto vertex_position_transformed = inverse_transform.Transform(pos_transformed, 1);
 
-        final_mesh_data->m_original_positions[draw_call].push_back(
-            Eigen::Vector3f(vertex_position_transformed.x, vertex_position_transformed.y,
-                            vertex_position_transformed.z));
+          final_mesh_data->m_original_positions[draw_call].push_back(
+              Eigen::Vector3f(vertex_position_transformed.x, vertex_position_transformed.y,
+                              vertex_position_transformed.z));
+        }
       }
     }
 
@@ -831,12 +839,7 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
 
       {
         const u32 component_type = VB_HAS_POSMTXIDX;
-        if (native_vertex_declaration.posmtx.enable && components_to_copy & component_type)
-        {
-          UpdateDeclaration(&final_replacement_chunk, component_type,
-                            native_vertex_declaration.posmtx);
-        }
-        else if (cpu_skinning_rig)
+        if (skinning_rig)
         {
           // Update our declaration to account for adding an index to the vertices
           // this is to avoid having to have a separate buffer...
@@ -850,9 +853,14 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
           final_replacement_chunk.vertex_declaration.posmtx.enable = false;
           final_replacement_chunk.components_available &= ~component_type;
         }
+        else if (native_vertex_declaration.posmtx.enable && components_to_copy & component_type)
+        {
+          UpdateDeclaration(&final_replacement_chunk, component_type,
+                            native_vertex_declaration.posmtx);
+        }
       }
 
-      if (cpu_skinning_rig && !native_vertex_declaration.posmtx.enable)
+      if (skinning_rig)
       {
         const u32 component_type = VB_HAS_WEIGHTS;
 
@@ -864,8 +872,8 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
         UpdateDeclaration(&final_replacement_chunk, component_type, custom_index);
 
         // Disable the chunk to avoid using it in the final rendering
-        final_replacement_chunk.vertex_declaration.weights.enable = false;
-        final_replacement_chunk.components_available &= ~component_type;
+        // final_replacement_chunk.vertex_declaration.weights.enable = false;
+        // final_replacement_chunk.components_available &= ~component_type;
       }
 
       for (std::size_t i = 0; i < native_vertex_declaration.colors.size(); i++)
@@ -978,8 +986,10 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
                             replacement_index);
 
         {
+          // If we use GPU skinning natively and our skinning doesn't come from a separate rig
           const u32 component_type = VB_HAS_POSMTXIDX;
-          if (native_vertex_declaration.posmtx.enable && components_to_copy & component_type)
+          if (native_vertex_declaration.posmtx.enable && components_to_copy & component_type &&
+              !skinning_rig)
           {
             CopyNativeMeshData(final_replacement_chunk, final_idx,
                                final_replacement_chunk.vertex_declaration.posmtx, draw_call_data,
@@ -1058,9 +1068,9 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
           }
         }
 
-        if (cpu_skinning_rig && !native_vertex_declaration.posmtx.enable)
+        if (skinning_rig)
         {
-          // If CPU skinned, we need to write our bone indexes to the posmtx spot
+          // If skinned, we need to write our bone indexes to the posmtx spot
           // Similarly, we need to write our weight values to the weight spot
 
           const auto bone_offset = final_replacement_chunk.vertex_declaration.posmtx.offset;
@@ -1069,9 +1079,6 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
                          final_idx * final_replacement_chunk.vertex_stride;
 
           const auto& smoothed_influence = replacement_weights[vert_data->weight_id];
-
-          // If we have native bones (gpu skinned)
-          // don't override
           std::memcpy(vert_ptr + bone_offset, smoothed_influence.bone_ids.data(), sizeof(int) * 4);
           std::memcpy(vert_ptr + weight_offset, smoothed_influence.weights.data(),
                       sizeof(float) * 4);
@@ -1093,11 +1100,11 @@ void CalculateMeshData(const NativeMeshData& native_mesh_data,
           // This should take our new vertex position back into object
           // space (allowing future animation transforms from the game to move the vertex in the
           // right spot!)
-          const auto new_vertex_position_transformed =
-              inverse_position_transform.Transform(vertex_position_transformed, 1);
+          /*const auto new_vertex_position_transformed =
+              inverse_position_transform.Transform(vertex_position_transformed, 1);*/
 
           // Now write that back to the data
-          WriteVertexPosition(final_replacement_chunk, new_vertex_position_transformed, final_idx);
+          WriteVertexPosition(final_replacement_chunk, vertex_position_transformed, final_idx);
         }
 
         if (replacement_chunk.vertex_declaration.normals[0].enable &&
@@ -1292,10 +1299,12 @@ bool ExporterSkinningRig::FromBinary(std::span<const u8> raw_data, ExporterSkinn
   // Load the data only needed during import
 
   // The Global Welded Weights (The "DNA" for the cage)
-  const size_t weight_count = data->runtime_rig.welded_positions.size();
-  data->global_weights.resize(weight_count);
+  u32 num_global_weights = 0;
+  std::memcpy(&num_global_weights, raw_data.data() + offset, sizeof(u32));
+  offset += sizeof(u32);
 
-  for (std::size_t i = 0; i < weight_count; ++i)
+  data->global_weights.resize(num_global_weights);
+  for (std::size_t i = 0; i < num_global_weights; ++i)
   {
     GraphicsModEditor::VertexInfluence influence;
 
@@ -1341,6 +1350,9 @@ bool ExporterSkinningRig::ToBinary(File::IOFile* file_data, const ExporterSkinni
     return false;
 
   // 2. Write Global Welded Weights (4 per vertex)
+  u32 num_global_weights = static_cast<u32>(data.global_weights.size());
+  file_data->WriteBytes(&num_global_weights, sizeof(u32));
+
   for (const auto& inf : data.global_weights)
   {
     file_data->WriteBytes(inf.bone_ids.data(), sizeof(int) * 4);
