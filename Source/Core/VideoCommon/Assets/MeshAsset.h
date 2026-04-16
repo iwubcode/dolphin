@@ -30,7 +30,8 @@ namespace VideoCommon
 {
 struct LocalBoneGroup
 {
-  int bone_id;
+  int global_bone_id;
+  int gpu_skinned_id;  // -1 if gpu skinning not provided
   std::vector<int> welded_indices;
   std::vector<int> original_indices;
   std::vector<float> weights;  // Confidence for SVD
@@ -39,15 +40,12 @@ struct LocalBoneGroup
 struct ChunkRigData
 {
   GraphicsModSystem::DrawCallID draw_call_id;
-  std::map<int, LocalBoneGroup> bone_groups;  // BoneID -> Group
+  std::vector<LocalBoneGroup> bones;
 };
 
 class SkinningRig
 {
 public:
-  std::vector<Eigen::Vector3f> welded_positions;
-  float welded_rig_scale;
-  Eigen::Vector3f welded_rig_centroid;
   std::vector<Eigen::Vector3f> bone_rest_centers;
   std::map<GraphicsModSystem::DrawCallID, ChunkRigData> draw_call_rig_details;
 
@@ -90,7 +88,7 @@ struct MeshData
       m_mesh_material_to_material_asset_id;
 
   std::map<GraphicsModSystem::DrawCallID, std::vector<MeshDataChunk>> m_skinning_chunks;
-  std::optional<SkinningRig> m_cpu_skinning_rig;
+  std::optional<SkinningRig> m_skinning_rig;
 
   std::map<GraphicsModSystem::DrawCallID, std::vector<Eigen::Vector3f>> m_original_positions;
 };

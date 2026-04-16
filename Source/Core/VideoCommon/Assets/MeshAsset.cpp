@@ -499,23 +499,6 @@ bool SkinningRig::FromBinary(const u8* raw_data, std::size_t* offset, SkinningRi
   if (!raw_data || !data) [[unlikely]]
     return false;
 
-  // 1. Welded Positions
-  u32 num_welded = 0;
-  std::memcpy(&num_welded, raw_data + *offset, sizeof(u32));
-  *offset += sizeof(u32);
-
-  data->welded_positions.resize(num_welded);
-  // Since Eigen::Vector3f is 3 floats, we can copy the block directly if it's packed
-  // or loop for safety if you prefer explicit float conversion
-  for (u32 i = 0; i < num_welded; ++i)
-  {
-    float p[3];
-    std::memcpy(p, raw_data + *offset, sizeof(float) * 3);
-    data->welded_positions[i] = Eigen::Vector3f(p[0], p[1], p[2]);
-    *offset += sizeof(float) * 3;
-  }
-
-  // 2. Bone Rest Centers
   u32 num_bones = 0;
   std::memcpy(&num_bones, raw_data + *offset, sizeof(u32));
   *offset += sizeof(u32);
@@ -554,48 +537,43 @@ bool SkinningRig::FromBinary(const u8* raw_data, std::size_t* offset, SkinningRi
       std::memcpy(&b_id, raw_data + *offset, sizeof(int));
       *offset += sizeof(int);
 
+      int gpu_skinned_id = -1;
+      std::memcpy(&gpu_skinned_id, raw_data + *offset, sizeof(int));
+      *offset += sizeof(int);
+
       u32 count = 0;
       std::memcpy(&count, raw_data + *offset, sizeof(u32));
       *offset += sizeof(u32);
 
-      LocalBoneGroup& group = chunk.bone_groups[b_id];
-      group.bone_id = b_id;
+      VideoCommon::LocalBoneGroup bone;
+      bone.global_bone_id = b_id;
+      bone.gpu_skinned_id = gpu_skinned_id;
 
-      group.original_indices.resize(count);
-      std::memcpy(group.original_indices.data(), raw_data + *offset, count * sizeof(int));
-      *offset += count * sizeof(int);
+      if (count > 0)
+      {
+        bone.original_indices.resize(count);
+        std::memcpy(bone.original_indices.data(), raw_data + *offset, count * sizeof(int));
+        *offset += count * sizeof(int);
 
-      group.welded_indices.resize(count);
-      std::memcpy(group.welded_indices.data(), raw_data + *offset, count * sizeof(int));
-      *offset += count * sizeof(int);
+        bone.welded_indices.resize(count);
+        std::memcpy(bone.welded_indices.data(), raw_data + *offset, count * sizeof(int));
+        *offset += count * sizeof(int);
 
-      group.weights.resize(count);
-      std::memcpy(group.weights.data(), raw_data + *offset, count * sizeof(float));
-      *offset += count * sizeof(float);
+        bone.weights.resize(count);
+        std::memcpy(bone.weights.data(), raw_data + *offset, count * sizeof(float));
+        *offset += count * sizeof(float);
+      }
+
+      chunk.bones.push_back(std::move(bone));
     }
   }
-
-  std::memcpy(data->welded_rig_centroid.data(), raw_data + *offset, 3 * sizeof(float));
-  *offset += 3 * sizeof(float);
-
-  std::memcpy(&data->welded_rig_scale, raw_data + *offset, sizeof(float));
-  *offset += sizeof(float);
-
   return true;
 }
 
 bool SkinningRig::ToBinary(File::IOFile* file_data, const SkinningRig& data)
 {
-  const u32 num_welded = static_cast<u32>(data.welded_positions.size());
   const u32 num_bones = static_cast<u32>(data.bone_rest_centers.size());
   const u32 num_draw_calls = static_cast<u32>(data.draw_call_rig_details.size());
-
-  file_data->WriteBytes(&num_welded, sizeof(u32));
-  for (const auto& v : data.welded_positions)
-  {
-    float p[3] = {v.x(), v.y(), v.z()};
-    file_data->WriteBytes(p, sizeof(float) * 3);
-  }
 
   file_data->WriteBytes(&num_bones, sizeof(u32));
   for (const auto& c : data.bone_rest_centers)
@@ -610,26 +588,29 @@ bool SkinningRig::ToBinary(File::IOFile* file_data, const SkinningRig& data)
     u64 id = static_cast<u64>(draw_call);
     file_data->WriteBytes(&id, sizeof(u64));
 
-    u32 active_bones = static_cast<u32>(chunk.bone_groups.size());
+    u32 active_bones = static_cast<u32>(chunk.bones.size());
     file_data->WriteBytes(&active_bones, sizeof(u32));
 
-    for (auto const& [b_id, group] : chunk.bone_groups)
+    for (auto const& bone : chunk.bones)
     {
-      file_data->WriteBytes(&b_id, sizeof(int));
-      u32 count = static_cast<u32>(group.original_indices.size());
+      file_data->WriteBytes(&bone.global_bone_id, sizeof(int));
+      file_data->WriteBytes(&bone.gpu_skinned_id, sizeof(int));
+
+      u32 count = static_cast<u32>(bone.original_indices.size());
       file_data->WriteBytes(&count, sizeof(u32));
 
-      // Save the "Moving" indices
-      file_data->WriteBytes(group.original_indices.data(), count * sizeof(int));
-      // Save the "Rest" indices
-      file_data->WriteBytes(group.welded_indices.data(), count * sizeof(int));
-      // Save the weights
-      file_data->WriteBytes(group.weights.data(), count * sizeof(float));
+      if (count > 0)
+      {
+        // Save the "Moving" indices
+        file_data->WriteBytes(bone.original_indices.data(), count * sizeof(int));
+        // Save the "Rest" indices
+        file_data->WriteBytes(bone.welded_indices.data(), count * sizeof(int));
+        // Save the weights
+        file_data->WriteBytes(bone.weights.data(), count * sizeof(float));
+      }
     }
   }
 
-  file_data->WriteBytes(data.welded_rig_centroid.data(), 3 * sizeof(float));
-  file_data->WriteBytes(&data.welded_rig_scale, sizeof(float));
   return true;
 }
 
@@ -773,7 +754,7 @@ bool MeshData::FromDolphinMesh(std::span<const u8> raw_data, MeshData* data)
     SkinningRig rig_result;
     if (!SkinningRig::FromBinary(raw_data.data(), &offset, &rig_result))
       return false;
-    data->m_cpu_skinning_rig = std::move(rig_result);
+    data->m_skinning_rig = std::move(rig_result);
   }
 
   std::size_t original_positions_map_size = 0;
@@ -865,12 +846,12 @@ bool MeshData::ToDolphinMesh(File::IOFile* file_data, const MeshData& data)
     }
   }
 
-  const bool has_cpu_skinning = data.m_cpu_skinning_rig.has_value();
+  const bool has_cpu_skinning = data.m_skinning_rig.has_value();
   if (!file_data->WriteBytes(&has_cpu_skinning, sizeof(bool)))
     return false;
-  if (data.m_cpu_skinning_rig)
+  if (data.m_skinning_rig)
   {
-    if (!SkinningRig::ToBinary(file_data, *data.m_cpu_skinning_rig))
+    if (!SkinningRig::ToBinary(file_data, *data.m_skinning_rig))
       return false;
   }
 
