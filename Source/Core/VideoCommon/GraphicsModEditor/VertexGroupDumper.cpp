@@ -47,6 +47,8 @@ struct ReferenceBone
   double maxMDE = 0.0;
 };
 
+using DrawToSkinningIdToGlobalBone = std::map<GraphicsModSystem::DrawCallID, std::map<int, int>>;
+
 namespace
 {
 namespace SimpleGeodesic
@@ -460,11 +462,8 @@ std::vector<Eigen::Matrix3Xd> ReassembleSignificantFrames(
 std::vector<int> GetGlobalGPUSkinningIDs(
     const std::map<GraphicsModSystem::DrawCallID, GraphicsModEditor::VertexGroupDumper::FinalData>&
         draw_call_to_mesh_data,
-    std::map<int, int>* global_id_to_gpu_skinning_id)
+    DrawToSkinningIdToGlobalBone* draw_to_skinning_details)
 {
-  std::map<std::pair<GraphicsModSystem::DrawCallID, int>, int>
-      draw_call_gpu_skinning_id_to_global_id;
-
   std::size_t total_vertices = 0;
   for (const auto& [draw_call, data] : draw_call_to_mesh_data)
   {
@@ -479,15 +478,15 @@ std::vector<int> GetGlobalGPUSkinningIDs(
   {
     const auto vertex_count = static_cast<std::size_t>(data.mesh_poses[0].cols());
 
+    auto& skinning_details = (*draw_to_skinning_details)[draw_call];
+
     for (std::size_t i = 0; i < data.gpu_skinning_ids.size(); i++)
     {
       const int gpu_skinning_id = data.gpu_skinning_ids[i];
-      const auto [iter, added] =
-          draw_call_gpu_skinning_id_to_global_id.try_emplace({draw_call, gpu_skinning_id}, 0);
+      const auto [iter, added] = skinning_details.try_emplace(gpu_skinning_id, 0);
       if (added)
       {
         iter->second = next_global_id;
-        (*global_id_to_gpu_skinning_id)[next_global_id] = gpu_skinning_id;
         next_global_id++;
       }
       gpu_skinning_ids[current_offset + i] = iter->second;
@@ -2609,7 +2608,7 @@ void ExportRigBinary(
     const std::vector<Eigen::Vector3d>& bone_centers,
     const std::map<GraphicsModSystem::DrawCallID, GraphicsModEditor::VertexGroupDumper::FinalData>&
         draw_call_to_data,
-    const std::map<int, int>& global_id_to_gpu_skinning_id)
+    const DrawToSkinningIdToGlobalBone& draw_call_to_skinning_details)
 {
   GraphicsModEditor::ExporterSkinningRig export_rig;
 
@@ -2626,59 +2625,70 @@ void ExportRigBinary(
   {
     const u32 v_count = static_cast<u32>(data.original_vertex_count);
 
-    // --- PART A: Local SVJ (Native -> Welded Map) ---
-    auto& local_svj = export_rig.draw_call_to_local_svj[draw_call];
-    local_svj.reserve(v_count);
-    for (u32 i = 0; i < v_count; ++i)
-    {
-      // global_SVJ is a VectorXi, so we just use () or []
-      local_svj.push_back(global_SVJ(global_v_offset + i));
-    }
-
-    // --- PART B: SVD Tracking Groups (ChunkRigData) ---
-    // This tells the SVD solver: "In this chunk, which vertices belong to which bone?"
     VideoCommon::ChunkRigData& chunk_rig = export_rig.runtime_rig.draw_call_rig_details[draw_call];
     chunk_rig.draw_call_id = draw_call;
 
-    std::unordered_map<int, VideoCommon::LocalBoneGroup> aggregator;
-    for (u32 local_i = 0; local_i < v_count; ++local_i)
+    if (const auto iter = draw_call_to_skinning_details.find(draw_call);
+        iter != draw_call_to_skinning_details.end())
     {
-      int welded_idx = local_svj[local_i];
-      const GraphicsModEditor::VertexInfluence& inf = vertex_influences[welded_idx];
-
-      // Check all 4 baked influences for this vertex
-      for (int k = 0; k < 4; ++k)
+      for (const int skinning_id : data.gpu_skinning_ids)
       {
-        float w = inf.weights[k];
-        // Only track vertices with significant weight to keep SVD stable
-        if (w > 0.1f)
+        if (const auto id_iter = iter->second.find(skinning_id); id_iter != iter->second.end())
         {
-          int b_id = inf.bone_ids[k];
-          auto& group = aggregator[b_id];
-          group.global_bone_id = b_id;
-
-          if (const auto iter = global_id_to_gpu_skinning_id.find(b_id);
-              iter != global_id_to_gpu_skinning_id.end())
+          if (const auto inverse_iter = data.gpu_skinning_inverse_transforms.find(skinning_id);
+              inverse_iter != data.gpu_skinning_inverse_transforms.end())
           {
-            group.gpu_skinned_id = iter->second;
+            VideoCommon::GpuSkinnedData skinning_data;
+            skinning_data.global_bone_id = id_iter->second;
+            skinning_data.inverse_transform = inverse_iter->second;
+            chunk_rig.gpu_skinned_data[skinning_id] = skinning_data;
           }
-          else
-          {
-            group.gpu_skinned_id = -1;
-          }
-
-          // PAIR CORRESPONDENCE:
-          // We need the moving vertex (local_i) and the rest vertex (welded_idx)
-          group.original_indices.push_back(static_cast<int>(local_i));
-          group.welded_indices.push_back(welded_idx);
-          group.weights.push_back(w);  // Confidence score for SVD
         }
       }
     }
-
-    for (auto& [id, group] : aggregator)
+    else
     {
-      chunk_rig.bones.push_back(std::move(group));
+      // --- PART A: Local SVJ (Native -> Welded Map) ---
+      auto& local_svj = export_rig.draw_call_to_local_svj[draw_call];
+      local_svj.reserve(v_count);
+      for (u32 i = 0; i < v_count; ++i)
+      {
+        // global_SVJ is a VectorXi, so we just use () or []
+        local_svj.push_back(global_SVJ(global_v_offset + i));
+      }
+
+      // --- PART B: SVD Tracking Groups (ChunkRigData) ---
+      // This tells the SVD solver: "In this chunk, which vertices belong to which bone?"
+      std::unordered_map<int, VideoCommon::LocalBoneGroup> aggregator;
+      for (u32 local_i = 0; local_i < v_count; ++local_i)
+      {
+        int welded_idx = local_svj[local_i];
+        const GraphicsModEditor::VertexInfluence& inf = vertex_influences[welded_idx];
+
+        // Check all 4 baked influences for this vertex
+        for (int k = 0; k < 4; ++k)
+        {
+          float w = inf.weights[k];
+          // Only track vertices with significant weight to keep SVD stable
+          if (w > 0.1f)
+          {
+            int b_id = inf.bone_ids[k];
+            auto& group = aggregator[b_id];
+            group.global_bone_id = b_id;
+
+            // PAIR CORRESPONDENCE:
+            // We need the moving vertex (local_i) and the rest vertex (welded_idx)
+            group.original_indices.push_back(static_cast<int>(local_i));
+            group.welded_indices.push_back(welded_idx);
+            group.weights.push_back(w);  // Confidence score for SVD
+          }
+        }
+      }
+
+      for (auto& [id, group] : aggregator)
+      {
+        chunk_rig.bones.push_back(std::move(group));
+      }
     }
 
     global_v_offset += v_count;
@@ -2718,6 +2728,34 @@ void VertexGroupDumper::AddDataToRecording(GraphicsModSystem::DrawCallID draw_ca
       return;
 
     data.gpu_skinning_ids = GetGPUSkinningIDs(draw_data);
+    for (const int gpu_skin_id : data.gpu_skinning_ids)
+    {
+      const auto [iter, added] = data.gpu_skinning_inverse_transforms.try_emplace(
+          gpu_skin_id, Common::Matrix44::Identity());
+      if (added)
+      {
+        Common::Matrix44& position_transform = iter->second;
+
+        // Extract the GPU skinning position transform for this index
+        for (std::size_t i = 0; i < 3; i++)
+        {
+          position_transform.data[i * 4 + 0] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_id + i][0];
+          position_transform.data[i * 4 + 1] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_id + i][1];
+          position_transform.data[i * 4 + 2] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_id + i][2];
+          position_transform.data[i * 4 + 3] =
+              draw_data.gpu_skinning_position_transform[gpu_skin_id + i][3];
+        }
+        position_transform.data[12] = 0;
+        position_transform.data[13] = 0;
+        position_transform.data[14] = 0;
+        position_transform.data[15] = 1;
+
+        position_transform = position_transform.Inverted();
+      }
+    }
 
     if (draw_data.uid->rasterization_state.primitive == PrimitiveType::TriangleStrip)
     {
@@ -2922,9 +2960,9 @@ void VertexGroupDumper::Save()
   }
 
   // Get the global sim IDs from the UN-WELDED stitched buffer
-  std::map<int, int> global_id_to_gpu_skinning_id;
+  DrawToSkinningIdToGlobalBone draw_to_skinning_details;
   const auto stitched_gpu_skinning_ids =
-      GetGlobalGPUSkinningIDs(m_draw_call_to_data, &global_id_to_gpu_skinning_id);
+      GetGlobalGPUSkinningIDs(m_draw_call_to_data, &draw_to_skinning_details);
 
   auto clean_grouping = GenerateRigFromMotion(reassembled_data, reassembled_data[0], heat_data,
                                               stitched_gpu_skinning_ids, SVJ);
@@ -2957,6 +2995,6 @@ void VertexGroupDumper::Save()
 
   File::IOFile outbound_file(fmt::format("{}.rig", base_name), "wb");
   ExportRigBinary(&outbound_file, reassembled_data[0], SVJ, influences, bone_centers,
-                  m_draw_call_to_data, global_id_to_gpu_skinning_id);
+                  m_draw_call_to_data, draw_to_skinning_details);
 }
 }  // namespace GraphicsModEditor

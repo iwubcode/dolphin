@@ -41,6 +41,7 @@ public:
     Eigen::MatrixXi rest_pose_face_indexes;
     std::size_t original_vertex_count;
     std::vector<int> gpu_skinning_ids;
+    std::map<int, Common::Matrix44> gpu_skinning_inverse_transforms;
   };
 
 private:
