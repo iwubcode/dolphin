@@ -31,16 +31,22 @@ namespace VideoCommon
 struct LocalBoneGroup
 {
   int global_bone_id;
-  int gpu_skinned_id;  // -1 if gpu skinning not provided
   std::vector<int> welded_indices;
   std::vector<int> original_indices;
   std::vector<float> weights;  // Confidence for SVD
+};
+
+struct GpuSkinnedData
+{
+  Common::Matrix44 inverse_transform;
+  int global_bone_id;
 };
 
 struct ChunkRigData
 {
   GraphicsModSystem::DrawCallID draw_call_id;
   std::vector<LocalBoneGroup> bones;
+  std::map<int, GpuSkinnedData> gpu_skinned_data;
 };
 
 class SkinningRig

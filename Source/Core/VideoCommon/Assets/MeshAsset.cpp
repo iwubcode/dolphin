@@ -533,21 +533,13 @@ bool SkinningRig::FromBinary(const u8* raw_data, std::size_t* offset, SkinningRi
 
     for (u32 j = 0; j < active_bones; ++j)
     {
-      int b_id = 0;
-      std::memcpy(&b_id, raw_data + *offset, sizeof(int));
-      *offset += sizeof(int);
-
-      int gpu_skinned_id = -1;
-      std::memcpy(&gpu_skinned_id, raw_data + *offset, sizeof(int));
+      VideoCommon::LocalBoneGroup bone;
+      std::memcpy(&bone.global_bone_id, raw_data + *offset, sizeof(int));
       *offset += sizeof(int);
 
       u32 count = 0;
       std::memcpy(&count, raw_data + *offset, sizeof(u32));
       *offset += sizeof(u32);
-
-      VideoCommon::LocalBoneGroup bone;
-      bone.global_bone_id = b_id;
-      bone.gpu_skinned_id = gpu_skinned_id;
 
       if (count > 0)
       {
@@ -565,6 +557,28 @@ bool SkinningRig::FromBinary(const u8* raw_data, std::size_t* offset, SkinningRi
       }
 
       chunk.bones.push_back(std::move(bone));
+    }
+
+    // 4. GPU Skinned Data
+    u32 num_gpu_skinned_entries = 0;
+    std::memcpy(&num_gpu_skinned_entries, raw_data + *offset, sizeof(u32));
+    *offset += sizeof(u32);
+
+    for (u32 j = 0; j < num_gpu_skinned_entries; ++j)
+    {
+      VideoCommon::GpuSkinnedData gpu_skinned_data;
+
+      int gpu_skinned_id_key = 0;
+      std::memcpy(&gpu_skinned_id_key, raw_data + *offset, sizeof(int));
+      *offset += sizeof(int);
+
+      std::memcpy(gpu_skinned_data.inverse_transform.data.data(), raw_data + *offset,
+                  sizeof(gpu_skinned_data.inverse_transform.data));
+      *offset += sizeof(gpu_skinned_data.inverse_transform.data);
+
+      std::memcpy(&gpu_skinned_data.global_bone_id, raw_data + *offset, sizeof(int));
+      *offset += sizeof(int);
+      chunk.gpu_skinned_data.try_emplace(gpu_skinned_id_key, std::move(gpu_skinned_data));
     }
   }
   return true;
@@ -594,7 +608,6 @@ bool SkinningRig::ToBinary(File::IOFile* file_data, const SkinningRig& data)
     for (auto const& bone : chunk.bones)
     {
       file_data->WriteBytes(&bone.global_bone_id, sizeof(int));
-      file_data->WriteBytes(&bone.gpu_skinned_id, sizeof(int));
 
       u32 count = static_cast<u32>(bone.original_indices.size());
       file_data->WriteBytes(&count, sizeof(u32));
@@ -608,6 +621,20 @@ bool SkinningRig::ToBinary(File::IOFile* file_data, const SkinningRig& data)
         // Save the weights
         file_data->WriteBytes(bone.weights.data(), count * sizeof(float));
       }
+    }
+
+    u32 num_gpu_skinned_entries = static_cast<u32>(chunk.gpu_skinned_data.size());
+    file_data->WriteBytes(&num_gpu_skinned_entries, sizeof(u32));
+
+    for (auto const& [gpu_skinned_id_key, gpu_skinned_data] : chunk.gpu_skinned_data)
+    {
+      // Write key
+      file_data->WriteBytes(&gpu_skinned_id_key, sizeof(int));
+      // Write inverse_transform (16 floats)
+      file_data->WriteBytes(gpu_skinned_data.inverse_transform.data.data(),
+                            sizeof(gpu_skinned_data.inverse_transform.data));
+      // Write global_bone_id
+      file_data->WriteBytes(&gpu_skinned_data.global_bone_id, sizeof(int));
     }
   }
 
