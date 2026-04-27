@@ -1347,94 +1347,91 @@ void VertexManagerBase::DrawCustomMesh(GraphicsModSystem::DrawCallID draw_call,
   auto& system = Core::System::GetInstance();
   auto& vertex_shader_manager = system.GetVertexShaderManager();
 
-  VideoCommon::SkeletonInstance* cpu_skeleton = nullptr;
-  const auto process_mesh_chunk =
-      [&](const VideoCommon::MeshResource::MeshChunk& mesh_chunk, int mesh_chunk_index,
-          const std::optional<VideoCommon::SkinningRig>& cpu_skinning_rig) {
-        // TODO: draw with a generic material?
-        if (!mesh_chunk.GetMaterial()) [[unlikely]]
-          return;
+  VideoCommon::SkeletonInstance* skeleton_instance = nullptr;
+  const auto process_mesh_chunk = [&](const VideoCommon::MeshResource::MeshChunk& mesh_chunk,
+                                      int mesh_chunk_index,
+                                      const std::optional<VideoCommon::SkinningRig>& skinning_rig) {
+    // TODO: draw with a generic material?
+    if (!mesh_chunk.GetMaterial()) [[unlikely]]
+      return;
 
-        const auto material_data = mesh_chunk.GetMaterial()->GetData();
-        if (!material_data) [[unlikely]]
-          return;
+    const auto material_data = mesh_chunk.GetMaterial()->GetData();
+    if (!material_data) [[unlikely]]
+      return;
 
-        const auto pipeline = material_data->GetPipeline();
-        if (!pipeline->m_config.vertex_shader || !pipeline->m_config.pixel_shader) [[unlikely]]
-          return;
+    const auto pipeline = material_data->GetPipeline();
+    if (!pipeline->m_config.vertex_shader || !pipeline->m_config.pixel_shader) [[unlikely]]
+      return;
 
-        const auto vertex_data = mesh_chunk.GetVertexData();
-        const auto index_data = mesh_chunk.GetIndexData();
-        if (vertex_data.empty() || index_data.empty()) [[unlikely]]
-          return;
+    const auto vertex_data = mesh_chunk.GetVertexData();
+    const auto index_data = mesh_chunk.GetIndexData();
+    if (vertex_data.empty() || index_data.empty()) [[unlikely]]
+      return;
 
-        vertex_shader_manager.SetVertexFormat(
-            mesh_chunk.GetComponentsAvailable(),
-            mesh_chunk.GetNativeVertexFormat()->GetVertexDeclaration());
+    vertex_shader_manager.SetVertexFormat(
+        mesh_chunk.GetComponentsAvailable(),
+        mesh_chunk.GetNativeVertexFormat()->GetVertexDeclaration());
 
-        Common::Matrix44 computed_transform;
-        computed_transform =
-            Common::Matrix44::Translate(mesh_chunk.GetPivotPoint()) * custom_transform;
-        if (!ignore_mesh_transform)
-        {
-          computed_transform *= mesh_chunk.GetTransform();
-        }
-        memcpy(vertex_shader_manager.constants.custom_transform.data(),
-               computed_transform.data.data(), 4 * sizeof(float4));
+    Common::Matrix44 computed_transform;
+    computed_transform = Common::Matrix44::Translate(mesh_chunk.GetPivotPoint()) * custom_transform;
+    if (!ignore_mesh_transform)
+    {
+      computed_transform *= mesh_chunk.GetTransform();
+    }
+    memcpy(vertex_shader_manager.constants.custom_transform.data(), computed_transform.data.data(),
+           4 * sizeof(float4));
 
-        u32 base_vertex, base_index;
+    u32 base_vertex, base_index;
 
-        if (!cpu_skinning_rig ||
-            mesh_chunk.GetNativeVertexFormat()->GetVertexDeclaration().posmtx.enable)
-        {
-          UploadUtilityVertices(vertex_data.data(), mesh_chunk.GetVertexStride(),
-                                static_cast<u32>(vertex_data.size()), index_data.data(),
-                                static_cast<u32>(index_data.size()), &base_vertex, &base_index);
-        }
-        else
-        {
-          XXH3_state_t id_hash;
-          XXH3_INITSTATE(&id_hash);
-          XXH3_64bits_reset_withSeed(&id_hash, static_cast<XXH64_hash_t>(1));
+    if (!skinning_rig)
+    {
+      UploadUtilityVertices(vertex_data.data(), mesh_chunk.GetVertexStride(),
+                            static_cast<u32>(vertex_data.size()), index_data.data(),
+                            static_cast<u32>(index_data.size()), &base_vertex, &base_index);
+    }
+    else
+    {
+      XXH3_state_t id_hash;
+      XXH3_INITSTATE(&id_hash);
+      XXH3_64bits_reset_withSeed(&id_hash, static_cast<XXH64_hash_t>(1));
 
-          XXH3_64bits_update(&id_hash, &draw_call, sizeof(GraphicsModSystem::DrawCallID));
-          XXH3_64bits_update(&id_hash, &mesh_chunk_index, sizeof(int));
-          const auto id = XXH3_64bits_digest(&id_hash);
-          const auto [it, inserted] = s_draw_call_to_memory.try_emplace(id, std::vector<u8>{});
+      XXH3_64bits_update(&id_hash, &draw_call, sizeof(GraphicsModSystem::DrawCallID));
+      XXH3_64bits_update(&id_hash, &mesh_chunk_index, sizeof(int));
+      const auto id = XXH3_64bits_digest(&id_hash);
+      const auto [it, inserted] = s_draw_call_to_memory.try_emplace(id, std::vector<u8>{});
 
-          const auto total_bytes = mesh_chunk.GetVertexCount() * mesh_chunk.GetVertexStride();
-          if (it->second.size() < total_bytes)
-            it->second.resize(total_bytes);
-          std::memcpy(it->second.data(), vertex_data.data(), total_bytes);
+      const auto total_bytes = mesh_chunk.GetVertexCount() * mesh_chunk.GetVertexStride();
+      if (it->second.size() < total_bytes)
+        it->second.resize(total_bytes);
+      std::memcpy(it->second.data(), vertex_data.data(), total_bytes);
 
-          GraphicsModSystem::CPUSkinning::ApplySkeleton(mesh_chunk, *cpu_skinning_rig,
-                                                        *cpu_skeleton, &it->second);
+      GraphicsModSystem::CPUSkinning::ApplySkeleton(mesh_chunk, *skinning_rig, *skeleton_instance,
+                                                    &it->second);
 
-          UploadUtilityVertices(it->second.data(), mesh_chunk.GetVertexStride(),
-                                mesh_chunk.GetVertexCount(), index_data.data(),
-                                static_cast<u32>(index_data.size()), &base_vertex, &base_index);
-        }
+      UploadUtilityVertices(it->second.data(), mesh_chunk.GetVertexStride(),
+                            mesh_chunk.GetVertexCount(), index_data.data(),
+                            static_cast<u32>(index_data.size()), &base_vertex, &base_index);
+    }
 
-        DrawViewsWithMaterial(base_vertex, base_index, static_cast<u32>(index_data.size()),
-                              mesh_chunk.GetPrimitiveType(), draw_data, *material_data,
-                              camera_manager);
-      };
+    DrawViewsWithMaterial(base_vertex, base_index, static_cast<u32>(index_data.size()),
+                          mesh_chunk.GetPrimitiveType(), draw_data, *material_data, camera_manager);
+  };
 
-  // Calculate our cpu_skeleton once per drawn mesh replacement
-  if (!cpu_skeleton && mesh_data.GetCPUSkinningRig())
+  // Calculate our skeleton once per drawn mesh replacement
+  if (!skeleton_instance && mesh_data.GetSkinningRig())
   {
     auto& instance = skeleton_manager.GetSkeletonForChunk(
-        draw_call, group_name, mesh_data.GetCPUSkinningRig()->bone_rest_centers.size());
-    cpu_skeleton = &instance;
+        draw_call, group_name, mesh_data.GetSkinningRig()->bone_rest_centers.size());
+    skeleton_instance = &instance;
     GraphicsModSystem::CPUSkinning::UpdateSkeleton(
-        draw_call, *mesh_data.GetCPUSkinningRig(),
-        mesh_data.GetSkinningOriginalPositions(draw_call), draw_data, cpu_skeleton);
+        draw_call, *mesh_data.GetSkinningRig(), mesh_data.GetSkinningOriginalPositions(draw_call),
+        draw_data, skeleton_instance);
   }
 
   const auto mesh_chunks = mesh_data.GetMeshChunks(draw_call);
   for (std::size_t i = 0; i < mesh_chunks.size(); i++)
   {
-    process_mesh_chunk(mesh_chunks[i], static_cast<int>(i), mesh_data.GetCPUSkinningRig());
+    process_mesh_chunk(mesh_chunks[i], static_cast<int>(i), mesh_data.GetSkinningRig());
   }
 }
 
