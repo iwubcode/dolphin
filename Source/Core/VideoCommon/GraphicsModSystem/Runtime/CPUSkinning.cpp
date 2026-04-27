@@ -4,6 +4,7 @@
 #include "VideoCommon/GraphicsModSystem/Runtime/CPUSkinning.h"
 
 #include <array>
+#include <set>
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
@@ -72,10 +73,6 @@ static void SolveChunkBoneTransforms(GraphicsModSystem::DrawCallID draw_call,
     return;
 
   const auto& chunk_rig_data = it->second;
-  // Initialize with Identity to avoid garbage data for unsolved bones
-  out_bone_matrices.assign(replacement_rig.bone_rest_centers.size(), Eigen::Affine3f::Identity());
-  out_bone_total_weights.assign(replacement_rig.bone_rest_centers.size(), 0.0f);
-
   const auto get_position = [](int index, const GraphicsModSystem::DrawDataView& native_draw_data) {
     const u8* read_ptr =
         native_draw_data.vertex_data + index * native_draw_data.vertex_format->GetVertexStride();
@@ -84,9 +81,9 @@ static void SolveChunkBoneTransforms(GraphicsModSystem::DrawCallID draw_call,
     return Eigen::Vector3f(native_position.x, native_position.y, native_position.z);
   };
 
-  for (auto const& [bone_id, local_bone_group] : chunk_rig_data.bone_groups)
+  for (auto const& bone : chunk_rig_data.bones)
   {
-    const size_t N = local_bone_group.original_indices.size();
+    const size_t N = bone.original_indices.size();
 
     // 1. Compute Centroids of the points as they are in the WORLD
     float total_w = 0.0f;
@@ -98,9 +95,9 @@ static void SolveChunkBoneTransforms(GraphicsModSystem::DrawCallID draw_call,
 
     for (size_t i = 0; i < N; ++i)
     {
-      float w = local_bone_group.weights[i];
-      c_rest += w * original_positions[local_bone_group.original_indices[i]];
-      c_curr += w * get_position(local_bone_group.original_indices[i], native_draw_data);
+      float w = bone.weights[i];
+      c_rest += w * original_positions[bone.original_indices[i]];
+      c_curr += w * get_position(bone.original_indices[i], native_draw_data);
       total_w += w;
     }
 
@@ -114,10 +111,9 @@ static void SolveChunkBoneTransforms(GraphicsModSystem::DrawCallID draw_call,
     Eigen::Matrix3f H = Eigen::Matrix3f::Zero();
     for (size_t i = 0; i < N; ++i)
     {
-      float w = local_bone_group.weights[i];
-      Eigen::Vector3f p_r = original_positions[local_bone_group.original_indices[i]] - c_rest;
-      Eigen::Vector3f p_c =
-          get_position(local_bone_group.original_indices[i], native_draw_data) - c_curr;
+      float w = bone.weights[i];
+      Eigen::Vector3f p_r = original_positions[bone.original_indices[i]] - c_rest;
+      Eigen::Vector3f p_c = get_position(bone.original_indices[i], native_draw_data) - c_curr;
       H += w * (p_c * p_r.transpose());  // Order: Current * Rest^T
     }
 
@@ -132,11 +128,281 @@ static void SolveChunkBoneTransforms(GraphicsModSystem::DrawCallID draw_call,
     }
 
     // 4. Transform
-    out_bone_matrices[bone_id].linear() = R;
-    out_bone_matrices[bone_id].translation() = c_curr - R * c_rest;
-    out_bone_total_weights[bone_id] = total_w;
+    out_bone_matrices[bone.global_bone_id].linear() = R;
+    out_bone_matrices[bone.global_bone_id].translation() = c_curr - R * c_rest;
+    out_bone_total_weights[bone.global_bone_id] = total_w;
   }
 }
+
+static void GetGPUSkinnedTransforms(GraphicsModSystem::DrawCallID draw_call,
+                                    const VideoCommon::SkinningRig& replacement_rig,
+                                    const std::vector<Eigen::Vector3f>& original_positions,
+                                    const GraphicsModSystem::DrawDataView& native_draw_data,
+                                    std::vector<Eigen::Affine3f>& out_bone_matrices,
+                                    std::vector<float>& out_bone_total_weights)
+{
+  auto it = replacement_rig.draw_call_rig_details.find(draw_call);
+  if (it == replacement_rig.draw_call_rig_details.end())
+    return;
+
+  std::set<int> gpu_skinning_ids;
+  for (std::size_t i = 0; i < native_draw_data.vertex_count; i++)
+  {
+    // Position transform is actually vertex specific
+    u32 gpu_skin_index;
+    std::memcpy(&gpu_skin_index,
+                native_draw_data.vertex_data +
+                    i * native_draw_data.vertex_format->GetVertexStride() +
+                    native_draw_data.vertex_format->GetVertexDeclaration().posmtx.offset,
+                sizeof(u32));
+    gpu_skinning_ids.insert(static_cast<int>(gpu_skin_index));
+  }
+
+  const auto get_gpu_skinning_transform =
+      [](int gpu_skin_index, const GraphicsModSystem::DrawDataView& native_draw_data) {
+        Common::Matrix44 position_transform = Common::Matrix44::Identity();
+        for (std::size_t i = 0; i < 3; i++)
+        {
+          position_transform.data[i * 4 + 0] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][0];
+          position_transform.data[i * 4 + 1] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][1];
+          position_transform.data[i * 4 + 2] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][2];
+          position_transform.data[i * 4 + 3] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][3];
+        }
+        position_transform.data[12] = 0;
+        position_transform.data[13] = 0;
+        position_transform.data[14] = 0;
+        position_transform.data[15] = 1;
+
+        Eigen::Map<Eigen::Matrix4f> m(position_transform.data.data());
+        return m;
+      };
+
+  for (const auto gpu_skinning_id : gpu_skinning_ids)
+  {
+    if (const auto gpu_iter = it->second.gpu_skinned_data.find(gpu_skinning_id);
+        gpu_iter != it->second.gpu_skinned_data.end())
+    {
+      auto& id = gpu_iter->second.global_bone_id;
+      // TODO: investigate...
+      if (id >= out_bone_matrices.size())
+        continue;
+
+      const auto gpu_skinning_transform =
+          get_gpu_skinning_transform(gpu_skinning_id, native_draw_data);
+      Eigen::Map<const Eigen::Matrix4f> captured_inverse(
+          gpu_iter->second.inverse_transform.data.data());
+      // out_bone_matrices[id] = captured_inverse.transpose() * gpu_skinning_transform.transpose();
+      out_bone_total_weights[id] = 99;
+    }
+  }
+
+  /*const auto& chunk_rig_data = it->second;
+
+  const auto get_position = [](int index, const GraphicsModSystem::DrawDataView& native_draw_data) {
+    const u8* read_ptr =
+        native_draw_data.vertex_data + index * native_draw_data.vertex_format->GetVertexStride();
+    const auto native_position =
+        ReadVec3(read_ptr, native_draw_data.vertex_format->GetVertexDeclaration().position.offset);
+    return Eigen::Vector3f(native_position.x, native_position.y, native_position.z);
+  };
+
+  const auto get_gpu_skinning_transform =
+      [](int gpu_skin_index, const GraphicsModSystem::DrawDataView& native_draw_data) {
+        Common::Matrix44 position_transform = Common::Matrix44::Identity();
+        for (std::size_t i = 0; i < 3; i++)
+        {
+          position_transform.data[i * 4 + 0] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][0];
+          position_transform.data[i * 4 + 1] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][1];
+          position_transform.data[i * 4 + 2] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][2];
+          position_transform.data[i * 4 + 3] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][3];
+        }
+        position_transform.data[12] = 0;
+        position_transform.data[13] = 0;
+        position_transform.data[14] = 0;
+        position_transform.data[15] = 1;
+
+        Eigen::Map<Eigen::Matrix4f> m(position_transform.data.data());
+        return m;
+      };
+
+  for (auto const& bone : chunk_rig_data.bones)
+  {
+    if (bone.gpu_skinned_id == -1)
+    {
+      WARN_LOG_FMT(VIDEO, "Global bone {} has unset gpu skin id", bone.global_bone_id);
+      continue;
+    }
+
+    if (gpu_skinning_ids.count(bone.gpu_skinned_id) == 0)
+    {
+      WARN_LOG_FMT(
+          VIDEO,
+          "Draw call {} with global bone {} has sim id {} that isn't in original native list",
+          std::to_underlying(draw_call), bone.global_bone_id, bone.gpu_skinned_id);
+      continue;
+    }
+
+    if (bone.global_bone_id >= out_bone_matrices.size())
+    {
+      WARN_LOG_FMT(VIDEO, "Draw call {} with global bone {} is out of bounds?",
+                   std::to_underlying(draw_call), bone.global_bone_id);
+      continue;
+    }
+
+    const size_t N = bone.original_indices.size();
+
+    // 1. Compute Centroids of the points as they are in the WORLD
+    float total_w = 0.0f;
+    Eigen::Vector3f c_rest = Eigen::Vector3f::Zero();
+    Eigen::Vector3f c_curr = Eigen::Vector3f::Zero();
+
+    if (original_positions.size() < N)
+      continue;
+
+    const auto sim_transform = get_gpu_skinning_transform(bone.gpu_skinned_id, native_draw_data);
+    Eigen::Affine3f transform;
+    transform.matrix() = sim_transform.transpose();
+
+    for (size_t i = 0; i < N; ++i)
+    {
+      float w = bone.weights[i];
+      c_rest += w * original_positions[bone.original_indices[i]];
+      c_curr +=
+          w * Eigen::Vector3f(transform * get_position(bone.original_indices[i], native_draw_data));
+      total_w += w;
+    }
+
+    if (total_w < 0.001f)
+      continue;  // Skip if no meaningful weight
+
+    c_rest /= (float)total_w;
+    c_curr /= (float)total_w;
+
+    // 2. Covariance H
+    Eigen::Matrix3f H = Eigen::Matrix3f::Zero();
+    for (size_t i = 0; i < N; ++i)
+    {
+      float w = bone.weights[i];
+      Eigen::Vector3f p_r = original_positions[bone.original_indices[i]] - c_rest;
+      Eigen::Vector3f p_c =
+          Eigen::Vector3f(transform * get_position(bone.original_indices[i], native_draw_data)) -
+          c_curr;
+      H += w * (p_c * p_r.transpose());  // Order: Current * Rest^T
+    }
+
+    // 3. SVD for Rotation
+    Eigen::JacobiSVD<Eigen::Matrix3f> svd(H, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3f R = svd.matrixU() * svd.matrixV().transpose();
+    if (R.determinant() < 0)
+    {
+      Eigen::Matrix3f V = svd.matrixV();
+      V.col(2) *= -1.0f;
+      R = svd.matrixU() * V.transpose();
+    }
+
+    // 4. Transform
+    out_bone_matrices[bone.global_bone_id].linear() = R;
+    out_bone_matrices[bone.global_bone_id].translation() = c_curr - R * c_rest;
+    out_bone_total_weights[bone.global_bone_id] = total_w;
+  }*/
+}
+
+/*static void GetGPUSkinnedTransforms(GraphicsModSystem::DrawCallID draw_call,
+                                    const VideoCommon::SkinningRig& replacement_rig,
+                                    const std::vector<Eigen::Vector3f>&,
+                                    const GraphicsModSystem::DrawDataView& native_draw_data,
+                                    std::vector<Eigen::Affine3f>& out_bone_matrices,
+                                    std::vector<float>& out_bone_total_weights)
+{
+  auto it = replacement_rig.draw_call_rig_details.find(draw_call);
+  if (it == replacement_rig.draw_call_rig_details.end())
+  {
+    WARN_LOG_FMT(VIDEO, "Can't find draw {}", std::to_underlying(draw_call));
+    return;
+  }
+
+  std::set<int> gpu_skinning_ids;
+  for (std::size_t i = 0; i < native_draw_data.vertex_count; i++)
+  {
+    // Position transform is actually vertex specific
+    u32 gpu_skin_index;
+    std::memcpy(&gpu_skin_index,
+                native_draw_data.vertex_data +
+                    i * native_draw_data.vertex_format->GetVertexStride() +
+                    native_draw_data.vertex_format->GetVertexDeclaration().posmtx.offset,
+                sizeof(u32));
+    gpu_skinning_ids.insert(static_cast<int>(gpu_skin_index));
+  }
+
+  const auto& chunk_rig_data = it->second;
+
+  const auto get_gpu_skinning_transform =
+      [](int gpu_skin_index, const GraphicsModSystem::DrawDataView& native_draw_data) {
+        Common::Matrix44 position_transform = Common::Matrix44::Identity();
+        for (std::size_t i = 0; i < 3; i++)
+        {
+          position_transform.data[i * 4 + 0] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][0];
+          position_transform.data[i * 4 + 1] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][1];
+          position_transform.data[i * 4 + 2] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][2];
+          position_transform.data[i * 4 + 3] =
+              native_draw_data.gpu_skinning_position_transform[gpu_skin_index + i][3];
+        }
+        position_transform.data[12] = 0;
+        position_transform.data[13] = 0;
+        position_transform.data[14] = 0;
+        position_transform.data[15] = 1;
+
+        Eigen::Map<Eigen::Matrix4f> m(position_transform.data.data());
+        return m;
+      };
+
+  if (chunk_rig_data.bones.empty())
+  {
+    WARN_LOG_FMT(VIDEO, "Draw call {} has no bones!", std::to_underlying(draw_call));
+  }
+
+  for (auto const& bone : chunk_rig_data.bones)
+  {
+    if (bone.gpu_skinned_id == -1)
+    {
+      WARN_LOG_FMT(VIDEO, "Global bone {} has unset gpu skin id", bone.global_bone_id);
+      continue;
+    }
+
+    if (gpu_skinning_ids.count(bone.gpu_skinned_id) == 0)
+    {
+      WARN_LOG_FMT(
+          VIDEO,
+          "Draw call {} with global bone {} has sim id {} that isn't in original native list",
+          std::to_underlying(draw_call), bone.global_bone_id, bone.gpu_skinned_id);
+      continue;
+    }
+
+    if (bone.global_bone_id >= out_bone_matrices.size())
+    {
+      WARN_LOG_FMT(VIDEO, "Draw call {} with global bone {} is out of bounds?",
+                   std::to_underlying(draw_call), bone.global_bone_id);
+      continue;
+    }
+
+    out_bone_matrices[bone.global_bone_id] =
+        get_gpu_skinning_transform(bone.gpu_skinned_id, native_draw_data);
+
+    // GPU skinned bones are prioritized over deduced bones
+    out_bone_total_weights[bone.global_bone_id] = 9999.0;
+  }
+}*/
 
 static void ApplyLinearBlendedSkinning(
     const VideoCommon::MeshResource::MeshChunk& replacement_chunk,  // The replacement chunk
@@ -241,23 +507,49 @@ void UpdateSkeleton(GraphicsModSystem::DrawCallID draw_call,
   // 1. Partial Solve: Can we solve for any bones using ONLY this chunk?
   std::vector<Eigen::Affine3f> local_bone_solutions;
   std::vector<float> local_bone_weights;
-  SolveChunkBoneTransforms(draw_call, replacement_rig, original_positions, native_draw_data,
-                           local_bone_solutions, local_bone_weights);
+
+  // Initialize with Identity to avoid garbage data for unsolved bones
+  local_bone_solutions.assign(replacement_rig.bone_rest_centers.size(),
+                              Eigen::Affine3f::Identity());
+  local_bone_weights.assign(replacement_rig.bone_rest_centers.size(), 0.0f);
+
+  const bool gpu_skinned_draw =
+      native_draw_data.vertex_format->GetVertexDeclaration().position.enable;
+  if (gpu_skinned_draw)
+  {
+    GetGPUSkinnedTransforms(draw_call, replacement_rig, original_positions, native_draw_data,
+                            local_bone_solutions, local_bone_weights);
+  }
+  else
+  {
+    SolveChunkBoneTransforms(draw_call, replacement_rig, original_positions, native_draw_data,
+                             local_bone_solutions, local_bone_weights);
+  }
 
   // 2. Update Global State:
   for (std::size_t bone_id = 0; bone_id < local_bone_solutions.size(); ++bone_id)
   {
+    // Shouldn't happen...need to figure out why
+    if (bone_id >= skeleton->solved_this_frame.size())
+      continue;
+
     if (skeleton->solved_this_frame[bone_id])
       continue;
 
     // ONLY update if this chunk is a "Better" representative for this bone
     if (local_bone_weights[bone_id] > skeleton->best_confidence[bone_id])
     {
+      // GPU skinned draws are always valid
       if (IsValidTransform(local_bone_solutions[bone_id]))
       {
+        // WARN_LOG_FMT(VIDEO, "Global bone {}", bone_id);
         skeleton->bone_matrices[bone_id] = local_bone_solutions[bone_id];
         skeleton->best_confidence[bone_id] = local_bone_weights[bone_id];
         skeleton->solved_this_frame[bone_id] = true;
+      }
+      else
+      {
+        WARN_LOG_FMT(VIDEO, "Invalid transform bone {}", bone_id);
       }
     }
   }
