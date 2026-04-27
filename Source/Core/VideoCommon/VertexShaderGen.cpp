@@ -102,7 +102,13 @@ static void WriteTransformMatrices(APIType api_type, const ShaderHostConfig& hos
   out.Write("mat3x4 dolphin_position_matrix()\n");
   out.Write("{{\n");
   out.Write("\tmat3x4 result;\n");
-  if ((uid_data->components & VB_HAS_POSMTXIDX) != 0)
+  if ((uid_data->components & VB_HAS_WEIGHTS) != 0)
+  {
+    out.Write("\tresult[0] = vec4(1.0, 0.0, 0.0, 0.0);\n");
+    out.Write("\tresult[1] = vec4(0.0, 1.0, 0.0, 0.0);\n");
+    out.Write("\tresult[2] = vec4(0.0, 0.0, 1.0, 0.0);\n");
+  }
+  else if ((uid_data->components & VB_HAS_POSMTXIDX) != 0)
   {
     if (uid_data->vs_expand != VSExpand::None)
     {
@@ -425,11 +431,11 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const ShaderHostConfig& ho
   else
   {
     // Can't use float3, etc because we want 4-byte alignment
-    out.Write(
-        "uint4 unpack_ubyte4(uint value) {{\n"
-        "  return uint4(value & 0xffu, (value >> 8) & 0xffu, (value >> 16) & 0xffu, value >> 24);\n"
-        "}}\n\n"
-        "struct InputData {{\n");
+    out.Write("uint4 unpack_ubyte4(uint value) {{\n"
+              "  return uint4(value & 0xffu, (value >> 8) & 0xffu, (value >> 16) & 0xffu, value "
+              ">> 24);\n"
+              "}}\n\n"
+              "struct InputData {{\n");
     if (uid_data->components & VB_HAS_POSMTXIDX)
     {
       out.Write("  uint posmtx;\n");
@@ -771,10 +777,10 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const ShaderHostConfig& ho
   // necessary.
   if (host_config.backend_depth_clamp)
   {
-    // Since we're adjusting z for the depth range before the perspective divide, we have to do our
-    // own clipping. We want to clip so that -w <= z <= 0, which matches the console -1..0 range.
-    // We adjust our depth value for clipping purposes to match the perspective projection in the
-    // software backend, which is a hack to fix Sonic Adventure and Unleashed games.
+    // Since we're adjusting z for the depth range before the perspective divide, we have to do
+    // our own clipping. We want to clip so that -w <= z <= 0, which matches the console -1..0
+    // range. We adjust our depth value for clipping purposes to match the perspective projection
+    // in the software backend, which is a hack to fix Sonic Adventure and Unleashed games.
     out.Write("float clipDepth = o.pos.z * (1.0 - 1e-7);\n"
               "float clipDist0 = clipDepth + o.pos.w;\n"  // Near: z < -w
               "float clipDist1 = -clipDepth;\n");         // Far: z > 0
@@ -809,8 +815,8 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const ShaderHostConfig& ho
   if (!host_config.backend_clip_control)
   {
     // If the graphics API doesn't support a depth range of 0..1, then we need to map z to
-    // the -1..1 range. Unfortunately we have to use a subtraction, which is a lossy floating-point
-    // operation that can introduce a round-trip error.
+    // the -1..1 range. Unfortunately we have to use a subtraction, which is a lossy
+    // floating-point operation that can introduce a round-trip error.
     out.Write("o.pos.z = o.pos.z * 2.0 - o.pos.w;\n");
   }
 
@@ -889,8 +895,8 @@ ShaderCode GenerateVertexShaderCode(APIType api_type, const ShaderHostConfig& ho
 void WriteVertexBody(APIType api_type, const ShaderHostConfig& host_config,
                      const vertex_shader_uid_data* uid_data, ShaderCode& out)
 {
-  out.Write(
-      "\tvertex_output.position = vec4(vertex_input.position * dolphin_position_matrix(), 1.0);\n");
+  out.Write("\tvertex_output.position = vec4(vertex_input.position * dolphin_position_matrix(), "
+            "1.0);\n");
 
   out.Write("\tvertex_output.normal = normalize(vertex_input.normal * dolphin_normal_matrix());\n");
 
