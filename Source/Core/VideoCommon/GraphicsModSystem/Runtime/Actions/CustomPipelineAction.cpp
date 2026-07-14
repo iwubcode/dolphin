@@ -60,7 +60,7 @@ void CustomPipelineAction::OnDrawStarted(GraphicsModActionData::DrawStarted* dra
     return;
 
   auto& resource_manager = Core::System::GetInstance().GetCustomResourceManager();
-  *draw_started->material = resource_manager.GetMaterialFromAsset(
+  *draw_started->material = resource_manager.GetDrawMaterialFromAsset(
       m_material_asset, *draw_started->draw_data_view.uid, m_library);
 }
 
