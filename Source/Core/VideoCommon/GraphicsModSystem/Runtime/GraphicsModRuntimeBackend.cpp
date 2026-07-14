@@ -240,4 +240,53 @@ void GraphicsModRuntimeBackend::ResetIndices()
 {
 }
 
+void GraphicsModRuntimeBackend::OnEFBStarted(const FBInfo& info, GraphicsModActionData::PreEFB* efb)
+{
+  if (m_mods.empty())
+    return;
+
+  const auto& mod = m_mods[0];
+  for (const auto& action : mod.m_actions)
+  {
+    action->BeforeEFB(efb);
+  }
+}
+
+void GraphicsModRuntimeBackend::OnEFBFinished(const FBInfo& info,
+                                              GraphicsModActionData::PostEFB* efb)
+{
+  if (m_mods.empty())
+    return;
+
+  const auto& mod = m_mods[0];
+  for (const auto& action : mod.m_actions)
+  {
+    action->AfterEFB(efb);
+  }
+}
+
+void GraphicsModRuntimeBackend::OnXFBStarted(const FBInfo& info)
+{
+  if (m_mods.empty())
+    return;
+
+  const auto& mod = m_mods[0];
+  for (const auto& action : mod.m_actions)
+  {
+    action->BeforeXFB();
+  }
+}
+
+void GraphicsModRuntimeBackend::OnXFBFinished(const FBInfo& info)
+{
+  if (m_mods.empty())
+    return;
+
+  const auto& mod = m_mods[0];
+  for (const auto& action : mod.m_actions)
+  {
+    action->AfterXFB();
+  }
+}
+
 }  // namespace GraphicsModSystem::Runtime

@@ -33,6 +33,11 @@ public:
   void AddIndices(OpcodeDecoder::Primitive primitive, u32 num_vertices) override;
   void ResetIndices() override;
 
+  void OnEFBStarted(const FBInfo& info, GraphicsModActionData::PreEFB* efb) override;
+  void OnEFBFinished(const FBInfo& info, GraphicsModActionData::PostEFB* efb) override;
+  void OnXFBStarted(const FBInfo& info) override;
+  void OnXFBFinished(const FBInfo& info) override;
+
 private:
   struct GraphicsMod
   {
