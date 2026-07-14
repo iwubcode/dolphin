@@ -19,15 +19,18 @@ public:
   GraphicsModAction& operator=(GraphicsModAction&&) = default;
 
   virtual void OnDrawStarted(GraphicsModActionData::DrawStarted*) {}
-  virtual void BeforeEFB(GraphicsModActionData::PreEFB*) {}
-  virtual void AfterEFB(GraphicsModActionData::PostEFB*) {}
-  virtual void BeforeXFB() {}
   virtual void OnProjection(GraphicsModActionData::Projection*) {}
   virtual void OnProjectionAndTexture(GraphicsModActionData::Projection*) {}
   virtual void OnTextureLoad(GraphicsModActionData::TextureLoad*) {}
   virtual void OnTextureCreate(GraphicsModActionData::TextureCreate*) {}
   virtual void OnLight(GraphicsModActionData::Light*) {}
   virtual void OnFrameEnd() {}
+
+  // Legacy behavior
+  virtual void BeforeEFB(GraphicsModActionData::PreEFB*) {}
+  virtual void AfterEFB(GraphicsModActionData::PostEFB*) {}
+  virtual void BeforeXFB() {}
+  virtual void AfterXFB() {}
 
   void SetID(u64 id) { m_id = id; }
   u64 GetID() const { return m_id; }
