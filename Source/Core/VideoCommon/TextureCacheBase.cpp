@@ -2282,19 +2282,15 @@ void TextureCacheBase::CopyRenderTargetToTexture(
     info.m_texture_format = baseFormat;
     if (is_xfb_copy)
     {
-      for (const auto& action : g_graphics_mod_manager->GetXFBActions(info))
-      {
-        action->BeforeXFB();
-      }
+      auto& mod_manager = system.GetGraphicsModManager();
+      mod_manager.GetBackend().OnXFBStarted(info);
     }
     else
     {
       bool skip = false;
       GraphicsModActionData::PreEFB efb{tex_w, tex_h, &skip, &scaled_tex_w, &scaled_tex_h};
-      for (const auto& action : g_graphics_mod_manager->GetEFBActions(info))
-      {
-        action->BeforeEFB(&efb);
-      }
+      auto& mod_manager = system.GetGraphicsModManager();
+      mod_manager.GetBackend().OnEFBStarted(info, &efb);
       if (skip == true)
       {
         if (copy_to_ram)
@@ -2364,13 +2360,11 @@ void TextureCacheBase::CopyRenderTargetToTexture(
         if (!is_xfb_copy)
         {
           GraphicsModActionData::PostEFB efb;
-          for (const auto& action : g_graphics_mod_manager->GetEFBActions(info))
+          auto& mod_manager = system.GetGraphicsModManager();
+          mod_manager.GetBackend().OnEFBFinished(info, &efb);
+          if (efb.material)
           {
-            action->AfterEFB(&efb);
-            if (efb.material)
-            {
-              ApplyMaterialToCacheEntry(*efb.material, entry.get());
-            }
+            ApplyMaterialToCacheEntry(*efb.material, entry.get());
           }
         }
       }
