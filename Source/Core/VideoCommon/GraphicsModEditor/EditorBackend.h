@@ -38,6 +38,12 @@ public:
 
   VideoCommon::CameraManager& GetCameraManager() { return m_camera_manager; }
 
+  // Legacy behavior
+  void OnEFBStarted(const FBInfo& info, GraphicsModActionData::PreEFB* efb) override;
+  void OnEFBFinished(const FBInfo& info, GraphicsModActionData::PostEFB* efb) override;
+  void OnXFBStarted(const FBInfo& info) override;
+  void OnXFBFinished(const FBInfo& info) override;
+
 private:
   void SelectionOccurred(const std::set<SelectableType>& selection);
 

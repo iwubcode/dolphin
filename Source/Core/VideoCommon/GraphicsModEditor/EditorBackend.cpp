@@ -228,7 +228,7 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
   if (m_selected_objects.contains(draw_call_id))
   {
     auto& resource_manager = Core::System::GetInstance().GetCustomResourceManager();
-    auto* material_resource = resource_manager.GetMaterialFromAsset(
+    auto* material_resource = resource_manager.GetDrawMaterialFromAsset(
         "editor-highlight-material", *draw_data.uid, m_state.m_editor_data.m_asset_library);
     const auto material_data = material_resource->GetData();
     if (material_data)
@@ -240,7 +240,7 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
            draw_data.projection_type != ProjectionType::Orthographic)
   {
     auto& resource_manager = Core::System::GetInstance().GetCustomResourceManager();
-    auto* material_resource = resource_manager.GetMaterialFromAsset(
+    auto* material_resource = resource_manager.GetDrawMaterialFromAsset(
         "editor-lighting-vis-material", *draw_data.uid, m_state.m_editor_data.m_asset_library);
     const auto material_data = material_resource->GetData();
     if (material_data)
@@ -252,7 +252,7 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
            draw_data.projection_type != ProjectionType::Orthographic)
   {
     auto& resource_manager = Core::System::GetInstance().GetCustomResourceManager();
-    auto* material_resource = resource_manager.GetMaterialFromAsset(
+    auto* material_resource = resource_manager.GetDrawMaterialFromAsset(
         "editor-normal-vis-material", *draw_data.uid, m_state.m_editor_data.m_asset_library);
     const auto material_data = material_resource->GetData();
     if (material_data)
@@ -298,7 +298,7 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
       if (m_selected_objects.contains(GroupWrapper{std::string{group}}))
       {
         auto& resource_manager = Core::System::GetInstance().GetCustomResourceManager();
-        auto* material_resource = resource_manager.GetMaterialFromAsset(
+        auto* material_resource = resource_manager.GetDrawMaterialFromAsset(
             "editor-highlight-material", *draw_data.uid, m_state.m_editor_data.m_asset_library);
         const auto material_data = material_resource->GetData();
         if (material_data)
@@ -517,4 +517,25 @@ void EditorBackend::ResetIndices()
 {
   m_state.m_scene_dumper.ResetIndices();
 }
+
+void EditorBackend::OnEFBStarted(const FBInfo& info, GraphicsModActionData::PreEFB* efb)
+{
+  // TODO
+}
+
+void EditorBackend::OnEFBFinished(const FBInfo& info, GraphicsModActionData::PostEFB* efb)
+{
+  // TODO
+}
+
+void EditorBackend::OnXFBStarted(const FBInfo& info)
+{
+  // TODO
+}
+
+void EditorBackend::OnXFBFinished(const FBInfo& info)
+{
+  // TODO
+}
+
 }  // namespace GraphicsModEditor
