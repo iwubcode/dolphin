@@ -110,7 +110,8 @@ MeshResource::MeshChunk::~MeshChunk() = default;
 void MeshResource::MeshChunk::UpdateMaterial(CustomResourceManager* resource_manager,
                                              std::shared_ptr<CustomAssetLibrary> asset_library)
 {
-  m_material = resource_manager->GetMaterialFromAsset(m_asset_id, m_uid, std::move(asset_library));
+  m_material =
+      resource_manager->GetDrawMaterialFromAsset(m_asset_id, m_uid, std::move(asset_library));
 }
 
 MeshResource::MeshResource(Resource::ResourceContext resource_context,
