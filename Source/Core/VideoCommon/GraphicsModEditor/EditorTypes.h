@@ -150,16 +150,27 @@ public:
     if (m_active)
       m_action->OnDrawStarted(draw);
   }
-  void OnEFB(GraphicsModActionData::EFB* efb) override
+  void BeforeEFB(GraphicsModActionData::PreEFB* efb) override
   {
     if (m_active)
-      m_action->OnEFB(efb);
+      m_action->BeforeEFB(efb);
   }
-  void OnXFB() override
+  void AfterEFB(GraphicsModActionData::PostEFB* efb) override
   {
     if (m_active)
-      m_action->OnXFB();
+      m_action->AfterEFB(efb);
   }
+  void BeforeXFB() override
+  {
+    if (m_active)
+      m_action->BeforeXFB();
+  }
+  void AfterXFB() override
+  {
+    if (m_active)
+      m_action->AfterXFB();
+  }
+
   void OnProjection(GraphicsModActionData::Projection* projection) override
   {
     if (m_active)
