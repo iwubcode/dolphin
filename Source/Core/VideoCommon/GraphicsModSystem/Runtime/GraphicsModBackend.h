@@ -8,6 +8,8 @@
 
 #include "Common/CommonTypes.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/CameraManager.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/FBInfo.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModActionData.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/SkeletonManager.h"
 #include "VideoCommon/GraphicsModSystem/Types.h"
 #include "VideoCommon/OpcodeDecoding.h"
@@ -37,6 +39,12 @@ public:
 
   void ClearAdditionalCameras(const MathUtil::Rectangle<int>& rc, bool color_enable,
                               bool alpha_enable, bool z_enable, u32 color, u32 z);
+
+  // Legacy behavior
+  virtual void OnEFBStarted(const FBInfo& info, GraphicsModActionData::PreEFB* efb) = 0;
+  virtual void OnEFBFinished(const FBInfo& info, GraphicsModActionData::PostEFB* efb) = 0;
+  virtual void OnXFBStarted(const FBInfo& info) = 0;
+  virtual void OnXFBFinished(const FBInfo& info) = 0;
 
 protected:
   void CustomDraw(const DrawDataView& draw_data, VertexManagerBase* vertex_manager,

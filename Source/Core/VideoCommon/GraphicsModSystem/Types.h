@@ -114,6 +114,7 @@ struct DrawData
   std::size_t index_count = 0;
 
   bool is_gpu_skinning = false;
+  u32 pos_normal_index = 0;
 
   ProjectionType projection_type;
   Projection::Raw projection_mat;
