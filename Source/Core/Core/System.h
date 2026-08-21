@@ -5,6 +5,8 @@
 
 #include <memory>
 
+class EmulatedGraphicsManager;
+class EmulatedGraphicsManager;
 class GeometryShaderManager;
 class Interpreter;
 class JitInterface;
@@ -211,6 +213,7 @@ public:
   VideoCommon::CustomResourceManager& GetCustomResourceManager() const;
   GraphicsModEditor::EditorMain& GetGraphicsModEditor() const;
   GraphicsModSystem::Runtime::GraphicsModManager& GetGraphicsModManager() const;
+  EmulatedGraphicsManager& GetEmulatedGraphicsManager() const;
   VideoEvents& GetVideoEvents() const;
 
 private:

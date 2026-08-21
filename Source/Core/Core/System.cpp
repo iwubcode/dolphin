@@ -34,6 +34,7 @@
 #include "IOS/USB/Emulated/Skylanders/Skylander.h"
 #include "IOS/USB/USBScanner.h"
 #include "VideoCommon/CommandProcessor.h"
+#include "VideoCommon/EmulatedGraphicsManager.h"
 #include "VideoCommon/Fifo.h"
 #include "VideoCommon/GeometryShaderManager.h"
 #include "VideoCommon/GraphicsModEditor/EditorMain.h"
@@ -110,6 +111,7 @@ struct System::Impl
   Movie::MovieManager m_movie;
   GraphicsModEditor::EditorMain m_graphics_mod_editor;
   GraphicsModSystem::Runtime::GraphicsModManager m_graphics_mod_manager;
+  EmulatedGraphicsManager m_emulated_graphics_manager;
 };
 
 System::System() : m_impl{std::make_unique<Impl>(*this)}
@@ -362,6 +364,10 @@ GraphicsModEditor::EditorMain& System::GetGraphicsModEditor() const
 GraphicsModSystem::Runtime::GraphicsModManager& System::GetGraphicsModManager() const
 {
   return m_impl->m_graphics_mod_manager;
+}
+EmulatedGraphicsManager& System::GetEmulatedGraphicsManager() const
+{
+  return m_impl->m_emulated_graphics_manager;
 }
 
 VideoEvents& System::GetVideoEvents() const
