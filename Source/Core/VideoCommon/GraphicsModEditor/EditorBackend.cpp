@@ -38,7 +38,7 @@ EditorBackend::EditorBackend(EditorState& state) : m_state(state)
 }
 
 void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
-                           VertexManagerBase* vertex_manager)
+                           IMeshRenderer* mesh_renderer)
 {
   // Determine our texture tags per texture
   Common::SmallVector<GraphicsModSystem::TextureTags, 8> tags_per_texture_hash;
@@ -233,7 +233,7 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
     const auto material_data = material_resource->GetData();
     if (material_data)
     {
-      vertex_manager->DrawEmulatedMesh(*material_data, draw_data, identity, m_camera_manager);
+      mesh_renderer->DrawEmulatedMesh(draw_data, *material_data, identity);
     }
   }
   else if (m_state.m_editor_data.m_view_lighting &&
@@ -245,7 +245,7 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
     const auto material_data = material_resource->GetData();
     if (material_data)
     {
-      vertex_manager->DrawEmulatedMesh(*material_data, draw_data, identity, m_camera_manager);
+      mesh_renderer->DrawEmulatedMesh(draw_data, *material_data, identity);
     }
   }
   else if (m_state.m_editor_data.m_view_normals &&
@@ -257,14 +257,14 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
     const auto material_data = material_resource->GetData();
     if (material_data)
     {
-      vertex_manager->DrawEmulatedMesh(*material_data, draw_data, identity, m_camera_manager);
+      mesh_renderer->DrawEmulatedMesh(draw_data, *material_data, identity);
     }
   }
   else
   {
     if (m_state.m_editor_data.m_disable_all_actions)
     {
-      vertex_manager->DrawEmulatedMesh(m_camera_manager);
+      mesh_renderer->DrawEmulatedMesh(draw_data);
     }
     else
     {
@@ -303,16 +303,16 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
         const auto material_data = material_resource->GetData();
         if (material_data)
         {
-          vertex_manager->DrawEmulatedMesh(*material_data, draw_data, identity, m_camera_manager);
+          mesh_renderer->DrawEmulatedMesh(draw_data, *material_data, identity);
         }
       }
       else if (!actions.empty())
       {
-        CustomDraw(draw_data, vertex_manager, actions, hash_output.draw_call_id, group);
+        CustomDraw(draw_data, mesh_renderer, actions, hash_output.draw_call_id, group);
       }
       else
       {
-        vertex_manager->DrawEmulatedMesh(m_camera_manager);
+        mesh_renderer->DrawEmulatedMesh(draw_data);
       }
     }
   }

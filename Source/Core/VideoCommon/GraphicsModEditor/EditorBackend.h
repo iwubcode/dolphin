@@ -25,7 +25,7 @@ class EditorBackend final : public GraphicsModSystem::Runtime::GraphicsModBacken
 public:
   explicit EditorBackend(EditorState&);
   void OnDraw(const GraphicsModSystem::DrawDataView& draw_started,
-              VertexManagerBase* vertex_manager) override;
+              IMeshRenderer* mesh_renderer) override;
   void OnTextureLoad(const GraphicsModSystem::TextureView& texture) override;
   void OnTextureUnload(GraphicsModSystem::TextureType texture_type,
                        std::string_view texture_hash) override;
