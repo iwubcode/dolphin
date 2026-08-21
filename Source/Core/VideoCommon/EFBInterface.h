@@ -8,11 +8,14 @@
 #include "Common/CommonTypes.h"
 
 enum class EFBReinterpretType;
+class FramebufferManager;
 
 class EFBInterfaceBase
 {
 public:
   virtual ~EFBInterfaceBase();
+
+  void SetFramebufferManager(FramebufferManager* framebuffer_manager);
 
   virtual void ReinterpretPixelData(EFBReinterpretType convtype) = 0;
 
@@ -27,6 +30,8 @@ protected:
 
   virtual u32 PeekColorInternal(u16 x, u16 y) = 0;
   virtual u32 PeekDepthInternal(u16 x, u16 y) = 0;
+
+  FramebufferManager* m_framebuffer_manager;
 };
 
 class HardwareEFBInterface final : public EFBInterfaceBase

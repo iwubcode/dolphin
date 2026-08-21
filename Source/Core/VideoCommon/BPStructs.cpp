@@ -10,7 +10,6 @@
 #include <fmt/format.h>
 
 #include "Common/CommonTypes.h"
-#include "Common/EnumMap.h"
 #include "Common/Logging/Log.h"
 
 #include "Core/DolphinAnalytics.h"
@@ -23,19 +22,16 @@
 #include "VideoCommon/BPFunctions.h"
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/BoundingBox.h"
-#include "VideoCommon/Fifo.h"
+#include "VideoCommon/EmulatedGraphicsManager.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/GeometryShaderManager.h"
+#include "VideoCommon/IGraphicsHandler.h"
 #include "VideoCommon/OpcodeDecoding.h"
 #include "VideoCommon/PerfQueryBase.h"
-#include "VideoCommon/PixelEngine.h"
 #include "VideoCommon/PixelShaderManager.h"
 #include "VideoCommon/Present.h"
-#include "VideoCommon/Statistics.h"
 #include "VideoCommon/TMEM.h"
-#include "VideoCommon/TextureCacheBase.h"
 #include "VideoCommon/TextureDecoder.h"
-#include "VideoCommon/VideoBackendBase.h"
 #include "VideoCommon/VideoCommon.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/VideoEvents.h"
@@ -93,6 +89,10 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
   FlushPipeline();
 
   ((u32*)&bpmem)[bp.address] = bp.newvalue;
+
+  auto& system = Core::System::GetInstance();
+  EmulatedGraphicsManager& graphics_manager = system.GetEmulatedGraphicsManager();
+  IGraphicsHandler* graphics_handler = graphics_manager.GetGraphicsHandler();
 
   switch (bp.address)
   {
@@ -182,15 +182,14 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
     {
     case 0x02:
     {
-      INCSTAT(g_stats.this_frame.num_draw_done);
-      g_texture_cache->FlushEFBCopies();
-      g_texture_cache->FlushStaleBinds();
-      g_framebuffer_manager->InvalidatePeekCache(false);
-      g_framebuffer_manager->RefreshPeekCache();
-      auto& system = Core::System::GetInstance();
-      if (!system.GetFifo().UseDeterministicGPUThread())
-        system.GetPixelEngine().SetFinish(cycles_into_future);  // may generate interrupt
-      DEBUG_LOG_FMT(VIDEO, "GXSetDrawDone SetPEFinish (value: {:#04X})", bp.newvalue & 0xFFFF);
+      const bool notify_gpu = true;
+      const bool notify_cpu = true;
+      graphics_handler->PixelEngineOperation(
+          {.type = EmulatedGraphics::PixelEngineData::Type::Finish,
+           .new_value = bp.newvalue,
+           .cycles_into_the_future = cycles_into_future,
+           .reset = true},
+          notify_cpu, notify_gpu);
       return;
     }
 
@@ -201,34 +200,26 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
     return;
   case BPMEM_PE_TOKEN_ID:  // Pixel Engine Token ID
   {
-    INCSTAT(g_stats.this_frame.num_token);
-    g_texture_cache->FlushEFBCopies();
-    g_texture_cache->FlushStaleBinds();
-    g_framebuffer_manager->InvalidatePeekCache(false);
-    g_framebuffer_manager->RefreshPeekCache();
-    auto& system = Core::System::GetInstance();
-    if (!system.GetFifo().UseDeterministicGPUThread())
-    {
-      system.GetPixelEngine().SetToken(static_cast<u16>(bp.newvalue & 0xFFFF), false,
-                                       cycles_into_future);
-    }
-    DEBUG_LOG_FMT(VIDEO, "SetPEToken {:#06X}", bp.newvalue & 0xFFFF);
+    const bool notify_gpu = true;
+    const bool notify_cpu = true;
+    graphics_handler->PixelEngineOperation(
+        {.type = EmulatedGraphics::PixelEngineData::Type::SetToken,
+         .new_value = bp.newvalue,
+         .cycles_into_the_future = cycles_into_future,
+         .reset = true},
+        notify_cpu, notify_gpu);
     return;
   }
   case BPMEM_PE_TOKEN_INT_ID:  // Pixel Engine Interrupt Token ID
   {
-    INCSTAT(g_stats.this_frame.num_token_int);
-    g_texture_cache->FlushEFBCopies();
-    g_texture_cache->FlushStaleBinds();
-    g_framebuffer_manager->InvalidatePeekCache(false);
-    g_framebuffer_manager->RefreshPeekCache();
-    auto& system = Core::System::GetInstance();
-    if (!system.GetFifo().UseDeterministicGPUThread())
-    {
-      system.GetPixelEngine().SetToken(static_cast<u16>(bp.newvalue & 0xFFFF), true,
-                                       cycles_into_future);
-    }
-    DEBUG_LOG_FMT(VIDEO, "SetPEToken + INT {:#06X}", bp.newvalue & 0xFFFF);
+    const bool notify_gpu = true;
+    const bool notify_cpu = true;
+    graphics_handler->PixelEngineOperation(
+        {.type = EmulatedGraphics::PixelEngineData::Type::SetInterrupt,
+         .new_value = bp.newvalue,
+         .cycles_into_the_future = cycles_into_future,
+         .reset = true},
+        notify_cpu, notify_gpu);
     return;
   }
 
@@ -295,101 +286,106 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
       srcRect.bottom = std::clamp<int>(srcRect.bottom, 0, EFB_HEIGHT);
     }
 
-    const u32 copy_width = srcRect.GetWidth();
-    const u32 copy_height = srcRect.GetHeight();
+    // bpmem.zcontrol.pixel_format to PixelFormat::Z24 is when the game wants to copy from ZBuffer
+    // (Zbuffer uses 24-bit Format)
+    const bool is_depth_copy = bpmem.zcontrol.pixel_format == PixelFormat::Z24;
 
-    if (destStride != 0)
+    EmulatedGraphics::FrameBufferCopyData copy_data{
+        .pe_copy = PE_copy,
+        .dest_address = destAddr,
+        .copy_width = static_cast<u32>(srcRect.GetWidth()),
+        .copy_height = static_cast<u32>(srcRect.GetHeight()),
+        .dest_stride = destStride,
+        .efbcopy_format = PE_copy.tp_realFormat(),
+        .is_depth_copy = is_depth_copy,
+        .is_intensity = PE_copy.intensity_fmt && PE_copy.auto_conv,
+        .half_scale = PE_copy.half_scale,
+        .y_scale = 1.0f,
+        .gamma = s_gammaLUT[PE_copy.gamma],
+        .src_rect = srcRect,
+        .clamp_top = bpmem.triggerEFBCopy.clamp_top,
+        .clamp_bottom = bpmem.triggerEFBCopy.clamp_bottom,
+        .filter_coefficients = bpmem.copyfilter.GetCoefficients()};
+
+    EmulatedGraphics::ClearCopyData clear_data{.src_rect = srcRect,
+                                               .color_enable = bpmem.blendmode.color_update != 0,
+                                               .alpha_enable = bpmem.blendmode.alpha_update != 0,
+                                               .z_enable = bpmem.zmode.update_enable != 0,
+                                               .pixel_format = bpmem.zcontrol.pixel_format,
+                                               .color_ar = bpmem.clearcolorAR,
+                                               .color_gb = bpmem.clearcolorGB,
+                                               .z_value = bpmem.clearZValue};
+
+    EmulatedGraphics::ScissorsAndViewportData scissors_and_viewport_data{
+        .scissor_top_left = bpmem.scissorTL,
+        .scissor_bottom_right = bpmem.scissorBR,
+        .scissor_offset = bpmem.scissorOffset,
+        .viewport = xfmem.viewport};
+
+    if (PE_copy.copy_to_xfb != 0)
     {
-      // Check if we are to copy from the EFB or draw to the XFB
-      if (PE_copy.copy_to_xfb == 0)
+      float y_scale;
+      if (PE_copy.scale_invert)
+        y_scale = 256.0f / static_cast<float>(bpmem.dispcopyyscale);
+      else
+        y_scale = static_cast<float>(bpmem.dispcopyyscale) / 256.0f;
+
+      const float num_xfb_lines = 1.0f + bpmem.copyTexSrcWH.y * y_scale;
+
+      copy_data.copy_height = num_xfb_lines;
+      copy_data.efbcopy_format = EFBCopyFormat::XFB;
+      copy_data.is_intensity = false;
+      copy_data.half_scale = false;
+      copy_data.y_scale = y_scale;
+
+      DEBUG_LOG_FMT(VIDEO,
+                    "RenderToXFB: destAddr: {:08x} | srcRect [{} {} {} {}] | fbWidth: {} | "
+                    "fbStride: {} | fbHeight: {} | yScale: {}",
+                    copy_data.dest_address, copy_data.src_rect.left, copy_data.src_rect.top,
+                    copy_data.src_rect.right, copy_data.src_rect.bottom, copy_data.copy_width + 1,
+                    copy_data.dest_stride, copy_data.copy_height, copy_data.y_scale);
+    }
+
+    graphics_handler->OnFrameBufferCopy(g_texture_cache.get(), pixel_shader_manager, copy_data);
+
+    if (PE_copy.copy_to_xfb != 0)
+    {
+      // This is as closest as we have to an "end of the frame"
+      // It works 99% of the time.
+      // But sometimes games want to render an XFB larger than the EFB's 640x528 pixel resolution
+      // (especially when using the 3xMSAA mode, which cuts EFB resolution to 640x264). So they
+      // render multiple sub-frames and arrange the XFB copies in next to each-other in main memory
+      // so they form a single completed XFB.
+      // See https://dolphin-emu.org/blog/2017/11/19/hybridxfb/ for examples and more detail.
+      GetVideoEvents().after_frame_event.Trigger(system);
+
+      // Note: Theoretically, in the future we could track the VI configuration and try to detect
+      //       when an XFB is the last XFB copy of a frame. Not only would we get a clean "end of
+      //       the frame", but we would also be able to use ImmediateXFB even for these games.
+      //       Might also clean up some issues with games doing XFB copies they don't intend to
+      //       display.
+
+      if (g_ActiveConfig.bImmediateXFB)
       {
-        // bpmem.zcontrol.pixel_format to PixelFormat::Z24 is when the game wants to copy from
-        // ZBuffer (Zbuffer uses 24-bit Format)
-        bool is_depth_copy = bpmem.zcontrol.pixel_format == PixelFormat::Z24;
-        g_texture_cache->CopyRenderTargetToTexture(
-            destAddr, PE_copy.tp_realFormat(), copy_width, copy_height, destStride, is_depth_copy,
-            srcRect, PE_copy.intensity_fmt && PE_copy.auto_conv, PE_copy.half_scale, 1.0f,
-            s_gammaLUT[PE_copy.gamma], bpmem.triggerEFBCopy.clamp_top,
-            bpmem.triggerEFBCopy.clamp_bottom, bpmem.copyfilter.GetCoefficients());
+        // below div two to convert from bytes to pixels - it expects width, not stride
+        g_presenter->ImmediateSwap(copy_data.dest_address, copy_data.dest_stride / 2,
+                                   copy_data.dest_stride, copy_data.copy_height);
       }
       else
       {
-        // We should be able to get away with deactivating the current bbox tracking
-        // here. Not sure if there's a better spot to put this.
-        // the number of lines copied is determined by the y scale * source efb height
-        g_bounding_box->Disable(pixel_shader_manager);
-
-        float yScale;
-        if (PE_copy.scale_invert)
-          yScale = 256.0f / static_cast<float>(bpmem.dispcopyyscale);
-        else
-          yScale = static_cast<float>(bpmem.dispcopyyscale) / 256.0f;
-
-        float num_xfb_lines = 1.0f + bpmem.copyTexSrcWH.y * yScale;
-
-        u32 height = static_cast<u32>(num_xfb_lines);
-
-        DEBUG_LOG_FMT(VIDEO,
-                      "RenderToXFB: destAddr: {:08x} | srcRect [{} {} {} {}] | fbWidth: {} | "
-                      "fbStride: {} | fbHeight: {} | yScale: {}",
-                      destAddr, srcRect.left, srcRect.top, srcRect.right, srcRect.bottom,
-                      bpmem.copyTexSrcWH.x + 1, destStride, height, yScale);
-
-        bool is_depth_copy = bpmem.zcontrol.pixel_format == PixelFormat::Z24;
-        g_texture_cache->CopyRenderTargetToTexture(
-            destAddr, EFBCopyFormat::XFB, copy_width, height, destStride, is_depth_copy, srcRect,
-            false, false, yScale, s_gammaLUT[PE_copy.gamma], bpmem.triggerEFBCopy.clamp_top,
-            bpmem.triggerEFBCopy.clamp_bottom, bpmem.copyfilter.GetCoefficients());
-
-        auto& system = Core::System::GetInstance();
-
-        // This is as closest as we have to an "end of the frame"
-        // It works 99% of the time.
-        // But sometimes games want to render an XFB larger than the EFB's 640x528 pixel resolution
-        // (especially when using the 3xMSAA mode, which cuts EFB resolution to 640x264). So they
-        // render multiple sub-frames and arrange the XFB copies in next to each-other in main
-        // memory so they form a single completed XFB. See
-        // https://dolphin-emu.org/blog/2017/11/19/hybridxfb/ for examples and more detail.
-        system.GetVideoEvents().after_frame_event.Trigger(system);
-
-        // Note: Theoretically, in the future we could track the VI configuration and try to detect
-        //       when an XFB is the last XFB copy of a frame. Not only would we get a clean "end of
-        //       the frame", but we would also be able to use ImmediateXFB even for these games.
-        //       Might also clean up some issues with games doing XFB copies they don't intend to
-        //       display.
-
-        if (g_ActiveConfig.bImmediateXFB)
+        if (system.GetFifoPlayer().IsRunningWithFakeVideoInterfaceUpdates())
         {
-          // below div two to convert from bytes to pixels - it expects width, not stride
-          g_presenter->ImmediateSwap(destAddr, destStride / 2, destStride, height);
-        }
-        else
-        {
-          if (system.GetFifoPlayer().IsRunningWithFakeVideoInterfaceUpdates())
-          {
-            auto& vi = system.GetVideoInterface();
-            vi.FakeVIUpdate(destAddr, srcRect.GetWidth(), destStride, height);
-          }
+          auto& vi = system.GetVideoInterface();
+          vi.FakeVIUpdate(copy_data.dest_address, copy_data.copy_width, copy_data.dest_stride,
+                          copy_data.copy_height);
         }
       }
     }
 
-    // Clear the rectangular region after copying it.
     if (PE_copy.clear)
     {
-      const bool color_enable = bpmem.blendmode.color_update != 0;
-      const bool alpha_enable = bpmem.blendmode.alpha_update != 0;
-      const bool z_enable = bpmem.zmode.update_enable != 0;
-      const auto pixel_format = bpmem.zcontrol.pixel_format;
-      const auto color_ar = bpmem.clearcolorAR;
-      const auto color_gb = bpmem.clearcolorGB;
-      const auto z_value = bpmem.clearZValue;
-      ClearScreen(g_framebuffer_manager.get(), srcRect, color_enable, alpha_enable, z_enable,
-                  pixel_format, color_ar, color_gb, z_value);
-
-      // Scissor rect must be restored.
-      BPFunctions::SetScissorAndViewport(g_framebuffer_manager.get(), bpmem.scissorTL,
-                                         bpmem.scissorBR, bpmem.scissorOffset, xfmem.viewport);
+      const bool is_xfb = PE_copy.copy_to_xfb != 0;
+      graphics_handler->OnFrameBufferClear(clear_data, scissors_and_viewport_data, is_xfb);
     }
 
     return;
@@ -403,7 +399,6 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
     u32 addr = bpmem.tmem_config.tlut_src << 5;
 
     // The GameCube ignores the upper bits of this address. Some games (WW, MKDD) set them.
-    auto& system = Core::System::GetInstance();
     if (!system.IsWii())
       addr = addr & 0x01FFFFFF;
 
@@ -531,8 +526,8 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
     return;
 
   case BPMEM_ZCOMPARE:  // Set the Z-Compare and EFB pixel format
-    OnPixelFormatChange(g_framebuffer_manager.get(), bpmem.zcontrol.pixel_format,
-                        bpmem.zcontrol.zformat);
+    graphics_handler->PixelFormatChange(
+        {.pixel_format = bpmem.zcontrol.pixel_format, .z_format = bpmem.zcontrol.zformat});
     if (bp.changes & 7)
       SetBlendMode();  // dual source could be activated by changing to PIXELFMT_RGBA6_Z24
     pixel_shader_manager.SetZModeControl();
@@ -612,14 +607,12 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
           if (tmem_addr_even + bytes_read > TMEM_SIZE)
             bytes_read = TMEM_SIZE - tmem_addr_even;
 
-          auto& system = Core::System::GetInstance();
           auto& memory = system.GetMemory();
           memory.CopyFromEmu(s_tex_mem.data() + tmem_addr_even, src_addr, bytes_read);
         }
       }
       else  // RGBA8 tiles (and CI14, but that might just be stupid libogc!)
       {
-        auto& system = Core::System::GetInstance();
         auto& memory = system.GetMemory();
 
         // AR and GB tiles are stored in separate TMEM banks => can't use a single memcpy for
@@ -646,8 +639,7 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
 
       if (OpcodeDecoder::g_record_fifo_data)
       {
-        Core::System::GetInstance().GetFifoRecorder().UseMemory(src_addr, bytes_read,
-                                                                MemoryUpdate::Type::TMEM);
+        system.GetFifoRecorder().UseMemory(src_addr, bytes_read, MemoryUpdate::Type::TMEM);
       }
 
       TMEM::InvalidateAll();
@@ -820,23 +812,37 @@ void LoadBPReg(u8 reg, u32 value, int cycles_into_future)
 
 void LoadBPRegPreprocess(u8 reg, u32 value, int cycles_into_future)
 {
-  auto& system = Core::System::GetInstance();
-
   // masking via BPMEM_BP_MASK could hypothetically be a problem
   u32 newval = value & 0xffffff;
+
+  auto type = EmulatedGraphics::PixelEngineData::Type::SetToken;
   switch (reg)
   {
   case BPMEM_SETDRAWDONE:
-    if ((newval & 0xff) == 0x02)
-      system.GetPixelEngine().SetFinish(cycles_into_future);
+    if ((newval & 0xff) != 0x02)
+      return;
+    type = EmulatedGraphics::PixelEngineData::Type::Finish;
     break;
   case BPMEM_PE_TOKEN_ID:
-    system.GetPixelEngine().SetToken(newval & 0xffff, false, cycles_into_future);
+    type = EmulatedGraphics::PixelEngineData::Type::SetToken;
     break;
   case BPMEM_PE_TOKEN_INT_ID:  // Pixel Engine Interrupt Token ID
-    system.GetPixelEngine().SetToken(newval & 0xffff, true, cycles_into_future);
+    type = EmulatedGraphics::PixelEngineData::Type::SetInterrupt;
     break;
+  default:
+    return;
   }
+
+  const bool notify_gpu = true;
+  const bool notify_cpu = true;
+  auto& system = Core::System::GetInstance();
+  EmulatedGraphicsManager& graphics_manager = system.GetEmulatedGraphicsManager();
+  IGraphicsHandler* graphics_handler = graphics_manager.GetGraphicsHandler();
+  graphics_handler->PixelEngineOperation({.type = type,
+                                          .new_value = static_cast<int>(newval),
+                                          .cycles_into_the_future = cycles_into_future,
+                                          .reset = false},
+                                         notify_cpu, notify_gpu);
 }
 
 std::pair<std::string, std::string> GetBPRegInfo(u8 cmd, u32 cmddata)
@@ -1368,6 +1374,10 @@ void BPReload()
                                      bpmem.scissorOffset, xfmem.viewport);
   SetDepthMode();
   SetBlendMode();
-  OnPixelFormatChange(g_framebuffer_manager.get(), bpmem.zcontrol.pixel_format,
-                      bpmem.zcontrol.zformat);
+
+  auto& system = Core::System::GetInstance();
+  EmulatedGraphicsManager& graphics_manager = system.GetEmulatedGraphicsManager();
+  IGraphicsHandler* graphics_handler = graphics_manager.GetGraphicsHandler();
+  graphics_handler->PixelFormatChange(
+      {.pixel_format = bpmem.zcontrol.pixel_format, .z_format = bpmem.zcontrol.zformat});
 }
