@@ -49,6 +49,7 @@
 #include "VideoCommon/CPMemory.h"
 #include "VideoCommon/CommandProcessor.h"
 #include "VideoCommon/EFBInterface.h"
+#include "VideoCommon/EmulatedGraphicsManager.h"
 #include "VideoCommon/Fifo.h"
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FramebufferManager.h"
@@ -357,6 +358,18 @@ bool VideoBackendBase::InitializeShared(std::unique_ptr<AbstractGfx> gfx,
   g_Config.VerifyValidity();
   UpdateActiveConfig();
 
+  /*AbstractGfx::StoredViewportAndScissors viewport_and_scissors{
+      .scissors_rect = g_framebuffer_manager->GetEFBFramebuffer()->GetRect(),
+      .viewport_x = 0,
+      .viewport_y = 0,
+      .viewport_width = static_cast<float>(g_framebuffer_manager->GetEFBWidth()),
+      .viewport_height = static_cast<float>(g_framebuffer_manager->GetEFBHeight()),
+      .viewport_near_depth = 0,
+      .viewport_far_depth = 1};
+  g_gfx->StoreViewportAndScissor(std::move(viewport_and_scissors));*/
+
+  system.GetEmulatedGraphicsManager().Initialize();
+
   if (g_Config.bDumpTextures)
   {
     OSD::AddMessage(fmt::format("Texture Dumping is enabled. This will reduce performance."),
@@ -383,6 +396,7 @@ void VideoBackendBase::ShutdownShared()
     g_texture_cache->Shutdown();
 
   system.GetGraphicsModManager().Shutdown();
+  system.GetEmulatedGraphicsManager().Shutdown();
 
   g_bounding_box.reset();
   g_perf_query.reset();

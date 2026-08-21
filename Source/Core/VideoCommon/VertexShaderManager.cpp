@@ -13,13 +13,13 @@
 #include "Common/Logging/Log.h"
 #include "Common/Matrix.h"
 #include "Core/System.h"
-#include "VideoCommon/BPFunctions.h"
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/CPMemory.h"
+#include "VideoCommon/EmulatedGraphicsManager.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/FreeLookCamera.h"
+#include "VideoCommon/IGraphicsHandler.h"
 #include "VideoCommon/Statistics.h"
-#include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoCommon.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/XFMemory.h"
@@ -395,8 +395,12 @@ void VertexShaderManager::SetConstants(XFStateManager& xf_state_manager)
     }
 
     dirty = true;
-    BPFunctions::SetScissorAndViewport(g_framebuffer_manager.get(), bpmem.scissorTL,
-                                       bpmem.scissorBR, bpmem.scissorOffset, xfmem.viewport);
+
+    auto& system = Core::System::GetInstance();
+    EmulatedGraphicsManager& graphics_manager = system.GetEmulatedGraphicsManager();
+    IGraphicsHandler* graphics_handler = graphics_manager.GetGraphicsHandler();
+    graphics_handler->SetScissorAndViewport(EmulatedGraphics::ScissorsAndViewportData{
+        bpmem.scissorTL, bpmem.scissorBR, bpmem.scissorOffset, xfmem.viewport});
     g_stats.AddScissorRect();
   }
 
