@@ -25,6 +25,7 @@
 #include "VideoCommon/Assets/CustomAsset.h"
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/HiresTextures.h"
+#include "VideoCommon/IFramebufferRenderer.h"
 #include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/TextureDecoder.h"
 #include "VideoCommon/TextureInfo.h"
@@ -33,6 +34,7 @@
 
 class AbstractFramebuffer;
 class AbstractStagingTexture;
+class FramebufferManager;
 class PointerWrap;
 struct SamplerState;
 struct VideoConfig;
@@ -167,6 +169,10 @@ struct TCacheEntry
   u32 pending_efb_copy_width = 0;
   u32 pending_efb_copy_height = 0;
 
+  // Pending Scale
+  u32 pending_scale_width = 0;
+  u32 pending_scale_height = 0;
+
   std::string texture_info_name = "";
 
   VideoCommon::CustomAsset::TimeType last_load_time;
@@ -232,8 +238,20 @@ struct TCacheEntry
   u64 CalculateHash() const;
 
   int HashSampleSize() const;
-  u32 GetWidth() const { return texture->GetConfig().width; }
-  u32 GetHeight() const { return texture->GetConfig().height; }
+  u32 GetWidth() const
+  {
+    if (pending_scale_width != 0)
+      return pending_scale_width;
+
+    return texture->GetConfig().width;
+  }
+  u32 GetHeight() const
+  {
+    if (pending_scale_height != 0)
+      return pending_scale_height;
+
+    return texture->GetConfig().height;
+  }
   u32 GetNumLevels() const { return texture->GetConfig().levels; }
   u32 GetNumLayers() const { return texture->GetConfig().layers; }
   AbstractTextureFormat GetFormat() const { return texture->GetConfig().format; }
@@ -242,7 +260,7 @@ struct TCacheEntry
 
 using RcTcacheEntry = std::shared_ptr<TCacheEntry>;
 
-class TextureCacheBase
+class TextureCacheBase : public IFramebufferRenderer
 {
 public:
   // Minimal version of TCacheEntry just for TexPool
@@ -285,12 +303,11 @@ public:
                               MathUtil::Rectangle<int>* display_rect);
 
   virtual void BindTextures(BitSet32 used_textures, const std::array<SamplerState, 8>& samplers);
-  void CopyRenderTargetToTexture(u32 dstAddr, EFBCopyFormat dstFormat, u32 width, u32 height,
-                                 u32 dstStride, bool is_depth_copy,
-                                 const MathUtil::Rectangle<int>& srcRect, bool isIntensity,
-                                 bool scaleByHalf, float y_scale, float gamma, bool clamp_top,
-                                 bool clamp_bottom,
-                                 const CopyFilterCoefficients::Values& filter_coefficients);
+  void CopyRenderTargetToCache(RcTcacheEntry entry, EFBCopyFormat dstFormat, u32 width, u32 height,
+                               bool is_depth_copy, const MathUtil::Rectangle<int>& srcRect,
+                               bool isIntensity, bool scaleByHalf, float y_scale, float gamma,
+                               bool clamp_top, bool clamp_bottom,
+                               const CopyFilterCoefficients::Values& filter_coefficients);
 
   void ScaleTextureCacheEntryTo(RcTcacheEntry& entry, u32 new_width, u32 new_height);
 
@@ -314,6 +331,34 @@ public:
   static SamplerState GetSamplerState(u32 index, float custom_tex_scale, bool custom_tex,
                                       bool has_arbitrary_mips);
 
+  static void RenderPaletteEntry(u32 texel_buffer_offset, const RcTcacheEntry& entry,
+                                 AbstractTexture* texture, TLUTFormat tlutfmt);
+  static void RenderReinterpretEntry(const RcTcacheEntry& entry, AbstractTexture* texture,
+                                     TextureFormat old_format, TextureFormat new_format);
+  void RenderScaledEntry(RcTcacheEntry& entry);
+
+  void ApplyMaterialToCacheEntry(const VideoCommon::MaterialResource& material, TCacheEntry* entry);
+
+  void UninitializeMemory(RcTcacheEntry entry);
+
+  RcTcacheEntry CopyRenderTargetToTexture(
+      u32 dstAddr, EFBCopyFormat dstFormat, u32 width, u32 height, u32 dstStride,
+      bool is_depth_copy, const MathUtil::Rectangle<int>& srcRect, bool isIntensity,
+      bool scaleByHalf, float y_scale, float gamma, bool clamp_top, bool clamp_bottom,
+      const CopyFilterCoefficients::Values& filter_coefficients);
+
+  void CompleteFramebufferCopy(RcTcacheEntry entry,
+                               const EmulatedGraphics::FrameBufferCopyData& copy_data);
+
+  RcTcacheEntry DeferFramebufferCopy(FramebufferManager* frame_buffer_manager,
+                                     const EmulatedGraphics::FrameBufferCopyData& copy_data);
+
+  RcTcacheEntry RenderFramebufferCopy(PixelShaderManager& pixel_shader_manager,
+                                      EmulatedGraphics::FrameBufferCopyData copy_data) override;
+
+  void
+  UninitializeFramebufferMemory(const EmulatedGraphics::FrameBufferCopyData& copy_data) override;
+
 protected:
   // Decodes the specified data to the GPU texture specified by entry.
   // Returns false if the configuration is not supported.
@@ -325,8 +370,9 @@ protected:
                           u32 aligned_height, u32 row_stride, const u8* palette,
                           TLUTFormat palette_format);
 
-  virtual void CopyEFB(AbstractStagingTexture* dst, const EFBCopyParams& params, u32 native_width,
-                       u32 bytes_per_row, u32 num_blocks_y, u32 memory_stride,
+  virtual void CopyEFB(AbstractStagingTexture* dst, FramebufferManager* frame_buffer_manager,
+                       const EFBCopyParams& params, u32 native_width, u32 bytes_per_row,
+                       u32 num_blocks_y, u32 memory_stride,
                        const MathUtil::Rectangle<int>& src_rect, bool scale_by_half,
                        bool linear_filter, float y_scale, float gamma, bool clamp_top,
                        bool clamp_bottom, const std::array<u32, 3>& filter_coefficients);
@@ -373,8 +419,9 @@ private:
 
   void CheckTempSize(size_t required_size);
 
-  RcTcacheEntry AllocateCacheEntry(const TextureConfig& config);
-  std::optional<TexPoolEntry> AllocateTexture(const TextureConfig& config);
+  RcTcacheEntry AllocateCacheEntry(const TextureConfig& config, std::string_view name = "");
+  std::optional<TexPoolEntry> AllocateTexture(const TextureConfig& config,
+                                              std::string_view name = "");
   TexPool::iterator FindMatchingTextureFromPool(const TextureConfig& config);
   TexAddrCache::iterator GetTexCacheIter(TCacheEntry* entry);
 
@@ -411,7 +458,32 @@ private:
   void DoSaveState(PointerWrap& p);
   void DoLoadState(PointerWrap& p);
 
-  void ApplyMaterialToCacheEntry(const VideoCommon::MaterialResource& material, TCacheEntry* entry);
+  struct FramebufferCopyParams
+  {
+    bool is_xfb_copy;
+    bool copy_to_vram;
+    bool copy_to_ram;
+    u32 tex_w, tex_h;  // native, half_scale applied
+    u32 scaled_tex_w, scaled_tex_h;
+    TextureFormat base_format;
+    u32 bytes_per_row;
+    u32 num_blocks_y;
+    u32 covered_range;
+    bool linear_filter;
+    u8* dst;  // null if address invalid
+  };
+
+  FramebufferCopyParams
+  PrepareFramebufferCopy(const EmulatedGraphics::FrameBufferCopyData& copy_data);
+  RcTcacheEntry SetupCopyEntry(FramebufferManager* frame_buffer_manager,
+                               const FramebufferCopyParams& params,
+                               const EmulatedGraphics::FrameBufferCopyData& copy_data,
+                               std::string_view name);
+  void CopyRenderTargetToRam(RcTcacheEntry& entry, FramebufferManager* frame_buffer_manager,
+                             const FramebufferCopyParams& params,
+                             const EmulatedGraphics::FrameBufferCopyData& copy_data);
+  void FinalizeFramebufferCopy(RcTcacheEntry& entry, const FramebufferCopyParams& params,
+                               const EmulatedGraphics::FrameBufferCopyData& copy_data);
 
   // m_textures_by_address is the authoritive version of what's actually "in" the texture cache
   // but it's possible for invalidated TCache entries to live on elsewhere
