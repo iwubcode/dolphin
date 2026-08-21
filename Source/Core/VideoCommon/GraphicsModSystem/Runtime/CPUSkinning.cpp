@@ -410,7 +410,6 @@ static void GetGPUSkinnedTransforms(GraphicsModSystem::DrawCallID draw_call,
 
 static void ApplyLinearBlendedSkinning(
     const VideoCommon::MeshResource::MeshChunk& replacement_chunk,  // The replacement chunk
-    const VideoCommon::SkinningRig& replacement_rig,
     const std::vector<Eigen::Affine3f>& bone_matrices,  // Output from SolveChunkBoneTransforms
     std::vector<u8>* out)                               // The final data to be written
 {
@@ -566,9 +565,8 @@ void UpdateSkeleton(GraphicsModSystem::DrawCallID draw_call,
 }
 
 void ApplySkeleton(const VideoCommon::MeshResource::MeshChunk& replacement_chunk,
-                   const VideoCommon::SkinningRig& replacement_rig,
                    const VideoCommon::SkeletonInstance& skeleton, std::vector<u8>* out)
 {
-  ApplyLinearBlendedSkinning(replacement_chunk, replacement_rig, skeleton.bone_matrices, out);
+  ApplyLinearBlendedSkinning(replacement_chunk, skeleton.bone_matrices, out);
 }
 }  // namespace GraphicsModSystem::CPUSkinning

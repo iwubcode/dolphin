@@ -25,6 +25,5 @@ void UpdateSkeleton(GraphicsModSystem::DrawCallID draw_call,
                     VideoCommon::SkeletonInstance* skeleton);
 
 void ApplySkeleton(const VideoCommon::MeshResource::MeshChunk& replacement_chunk,
-                   const VideoCommon::SkinningRig& replacement_rig,
                    const VideoCommon::SkeletonInstance& skeleton, std::vector<u8>* out);
 }  // namespace GraphicsModSystem::CPUSkinning
