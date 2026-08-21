@@ -145,12 +145,11 @@ GraphicsModRuntimeBackend::GraphicsModRuntimeBackend(const Config::GraphicsModGr
   }
 }
 
-void GraphicsModRuntimeBackend::OnDraw(const DrawDataView& draw_data,
-                                       VertexManagerBase* vertex_manager)
+void GraphicsModRuntimeBackend::OnDraw(const DrawDataView& draw_data, IMeshRenderer* mesh_renderer)
 {
   if (m_mods.empty())
   {
-    vertex_manager->DrawEmulatedMesh(m_camera_manager);
+    mesh_renderer->DrawEmulatedMesh(draw_data);
     return;
   }
 
@@ -167,12 +166,12 @@ void GraphicsModRuntimeBackend::OnDraw(const DrawDataView& draw_data,
     if (const auto iter = mod.m_draw_id_to_actions.find(draw_call_id);
         iter != mod.m_draw_id_to_actions.end())
     {
-      CustomDraw(draw_data, vertex_manager, iter->second, draw_call_id, group);
+      CustomDraw(draw_data, mesh_renderer, iter->second, draw_call_id, group);
       return;
     }
   }
 
-  vertex_manager->DrawEmulatedMesh(m_camera_manager);
+  mesh_renderer->DrawEmulatedMesh(draw_data);
 }
 
 void GraphicsModRuntimeBackend::OnTextureLoad(const TextureView& texture)
@@ -227,6 +226,8 @@ void GraphicsModRuntimeBackend::OnFramePresented(const PresentInfo& present_info
   {
     for (const auto& action : mod.m_actions)
     {
+      if (!action)
+        continue;
       action->OnFrameEnd();
     }
   }

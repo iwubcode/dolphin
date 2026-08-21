@@ -6,6 +6,8 @@
 #include "Core/System.h"
 
 #include "VideoCommon/GXPipelineTypes.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/CPUSkinning.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/DeferredGraphicsHandler.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModAction.h"
 #include "VideoCommon/Resources/CustomResourceManager.h"
 #include "VideoCommon/ShaderGenCommon.h"
@@ -45,8 +47,12 @@ void GraphicsModBackend::ClearAdditionalCameras(const MathUtil::Rectangle<int>& 
   m_camera_manager.ClearCameraRenderTargets(rc, color_enable, alpha_enable, z_enable, color, z);
 }
 
-void GraphicsModBackend::CustomDraw(const DrawDataView& draw_data,
-                                    VertexManagerBase* vertex_manager,
+XFBFrame* GraphicsModBackend::GetFrameData()
+{
+  return &m_xfb_frame;
+}
+
+void GraphicsModBackend::CustomDraw(const DrawDataView& draw_data, IMeshRenderer* mesh_renderer,
                                     std::span<GraphicsModAction*> actions, DrawCallID draw_call,
                                     std::string_view group_name)
 {
@@ -69,6 +75,9 @@ void GraphicsModBackend::CustomDraw(const DrawDataView& draw_data,
 
   for (const auto& action : actions)
   {
+    if (!action)
+      continue;
+
     action->OnDrawStarted(&draw_started);
     if (camera)
     {
@@ -79,9 +88,20 @@ void GraphicsModBackend::CustomDraw(const DrawDataView& draw_data,
       const auto mesh_data = mesh_resource->GetData();
       if (mesh_data)
       {
-        vertex_manager->DrawCustomMesh(draw_call, group_name, *mesh_data, draw_data,
-                                       custom_transform.value_or(identity), ignore_mesh_transform,
-                                       m_camera_manager, m_skeleton_manager);
+        VideoCommon::SkeletonInstance* skeleton_instance = nullptr;
+        if (mesh_data->GetSkinningRig())
+        {
+          auto& instance = m_skeleton_manager.GetSkeletonForChunk(
+              draw_call, group_name, mesh_data->GetSkinningRig()->bone_rest_centers.size());
+          skeleton_instance = &instance;
+          GraphicsModSystem::CPUSkinning::UpdateSkeleton(
+              draw_call, *mesh_data->GetSkinningRig(),
+              mesh_data->GetSkinningOriginalPositions(draw_call), draw_data, skeleton_instance);
+        }
+
+        mesh_renderer->DrawCustomMesh(draw_data, draw_call, *mesh_data,
+                                      custom_transform.value_or(identity), ignore_mesh_transform,
+                                      skeleton_instance);
         return;
       }
     }
@@ -97,13 +117,13 @@ void GraphicsModBackend::CustomDraw(const DrawDataView& draw_data,
     const auto material_data = material_resource->GetData();
     if (material_data)
     {
-      vertex_manager->DrawEmulatedMesh(*material_data, draw_data,
-                                       custom_transform.value_or(identity), m_camera_manager);
+      mesh_renderer->DrawEmulatedMesh(draw_data, *material_data,
+                                      custom_transform.value_or(identity));
       return;
     }
   }
 
-  vertex_manager->DrawEmulatedMesh(m_camera_manager, custom_transform.value_or(identity));
+  mesh_renderer->DrawEmulatedMesh(draw_data, custom_transform.value_or(identity));
 }
 
 DrawCallID GraphicsModBackend::GetSkinnedDrawCallID(DrawCallID draw_call_id, MaterialID material_id,
