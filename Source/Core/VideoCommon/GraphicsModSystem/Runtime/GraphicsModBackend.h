@@ -3,18 +3,21 @@
 
 #pragma once
 
+#include <memory>
 #include <span>
 #include <string_view>
 
 #include "Common/CommonTypes.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/CameraManager.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/FBInfo.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/FrameData.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModActionData.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/SkeletonManager.h"
 #include "VideoCommon/GraphicsModSystem/Types.h"
+#include "VideoCommon/IGraphicsHandler.h"
+#include "VideoCommon/IMeshRenderer.h"
 #include "VideoCommon/OpcodeDecoding.h"
 #include "VideoCommon/ShaderGenCommon.h"
-#include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoEvents.h"
 
 class GraphicsModAction;
@@ -25,7 +28,7 @@ class GraphicsModBackend
 public:
   virtual ~GraphicsModBackend() = default;
 
-  virtual void OnDraw(const DrawDataView& draw_started, VertexManagerBase* vertex_manager) = 0;
+  virtual void OnDraw(const DrawDataView& draw_started, IMeshRenderer* mesh_renderer) = 0;
   virtual void OnTextureUnload(TextureType texture_type, std::string_view texture_hash) = 0;
   virtual void OnTextureLoad(const TextureView& texture) = 0;
   virtual void OnTextureCreate(const TextureView& texture) = 0;
@@ -40,6 +43,8 @@ public:
   void ClearAdditionalCameras(const MathUtil::Rectangle<int>& rc, bool color_enable,
                               bool alpha_enable, bool z_enable, u32 color, u32 z);
 
+  XFBFrame* GetFrameData();
+
   // Legacy behavior
   virtual void OnEFBStarted(const FBInfo& info, GraphicsModActionData::PreEFB* efb) = 0;
   virtual void OnEFBFinished(const FBInfo& info, GraphicsModActionData::PostEFB* efb) = 0;
@@ -47,7 +52,7 @@ public:
   virtual void OnXFBFinished(const FBInfo& info) = 0;
 
 protected:
-  void CustomDraw(const DrawDataView& draw_data, VertexManagerBase* vertex_manager,
+  void CustomDraw(const DrawDataView& draw_data, IMeshRenderer* mesh_renderer,
                   std::span<GraphicsModAction*> actions, DrawCallID draw_call,
                   std::string_view group_name);
 
@@ -60,6 +65,7 @@ protected:
   ShaderHostConfig m_shader_host_config;
 
   VideoCommon::CameraManager m_camera_manager;
+  XFBFrame m_xfb_frame;
   VideoCommon::SkeletonManager m_skeleton_manager;
 
 private:
