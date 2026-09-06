@@ -35,6 +35,7 @@
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/GeometryShaderManager.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/CPUSkinning.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/DeferredPerfTelemetry.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModManager.h"
 #include "VideoCommon/GraphicsModSystem/Types.h"
 #include "VideoCommon/GraphicsPathTracer.h"
@@ -1183,6 +1184,11 @@ void VertexManagerBase::ProcessEmulatedMesh(
     const Common::Matrix44& custom_transform, DrawAction action,
     std::vector<EmulatedGraphics::DrawCallData>* deferred_out)
 {
+  const bool defer_telemetry = DeferredPerf::kTelemetryEnabled && action == DrawAction::Defer;
+  u64 defer_start = 0;
+  if (defer_telemetry)
+    defer_start = Common::Timer::NowUs();
+
   auto& system = Core::System::GetInstance();
   auto& geometry_shader_manager = system.GetGeometryShaderManager();
   auto& pixel_shader_manager = system.GetPixelShaderManager();
@@ -1214,7 +1220,7 @@ void VertexManagerBase::ProcessEmulatedMesh(
     EmulatedGraphics::Texture texture;
     texture.ptr = draw_data_texture.texture_data;
     texture.index = draw_data_texture.unit;
-    texture.sampler = draw_data.samplers[i];
+    texture.sampler = draw_data.samplers[draw_data_texture.unit];
     draw_call_data.textures.push_back(std::move(texture));
   }
 
@@ -1232,6 +1238,11 @@ void VertexManagerBase::ProcessEmulatedMesh(
       draw_call_data.vertex_shader_constants = vertex_shader_manager.constants;
 
     deferred_out->push_back(std::move(draw_call_data));
+    if (defer_telemetry)
+    {
+      DeferredPerf::Telemetry::Get().AddDeferProcessUs(Common::Timer::NowUs() - defer_start);
+      DeferredPerf::Telemetry::Get().AddGameDrawCall();
+    }
   }
 }
 
@@ -1322,6 +1333,11 @@ void VertexManagerBase::ProcessCustomMeshChunk(
     bool ignore_mesh_transform, VideoCommon::SkeletonInstance* skeleton_instance, DrawAction action,
     std::vector<EmulatedGraphics::DrawCallData>* deferred_out)
 {
+  const bool defer_telemetry = DeferredPerf::kTelemetryEnabled && action == DrawAction::Defer;
+  u64 defer_start = 0;
+  if (defer_telemetry)
+    defer_start = Common::Timer::NowUs();
+
   auto& system = Core::System::GetInstance();
   auto& geometry_shader_manager = system.GetGeometryShaderManager();
   auto& pixel_shader_manager = system.GetPixelShaderManager();
@@ -1396,7 +1412,7 @@ void VertexManagerBase::ProcessCustomMeshChunk(
     EmulatedGraphics::Texture texture;
     texture.ptr = draw_data_texture.texture_data;
     texture.index = draw_data_texture.unit;
-    texture.sampler = draw_data.samplers[i];
+    texture.sampler = draw_data.samplers[draw_data_texture.unit];
     textures.push_back(std::move(texture));
   }
 
@@ -1425,12 +1441,23 @@ void VertexManagerBase::ProcessCustomMeshChunk(
       draw_call_data.vertex_shader_constants = vertex_shader_manager.constants;
 
     deferred_out->push_back(std::move(draw_call_data));
+    if (defer_telemetry)
+    {
+      DeferredPerf::Telemetry::Get().AddDeferProcessUs(Common::Timer::NowUs() - defer_start);
+      DeferredPerf::Telemetry::Get().AddGameDrawCall();
+    }
   }
 }
 
 void VertexManagerBase::DrawGraphicsData(FramebufferManager* framebuffer_manager,
                                          const EmulatedGraphics::DrawCallData& draw_call_data)
 {
+  const bool telemetry = DeferredPerf::kTelemetryEnabled;
+  auto& telemetry_instance = DeferredPerf::Telemetry::Get();
+  u64 drawgfx_start = 0;
+  if (telemetry)
+    drawgfx_start = Common::Timer::NowUs();
+
   SetBuffer(draw_call_data.vertex_stride);
 
   UploadUniforms();
@@ -1464,4 +1491,19 @@ void VertexManagerBase::DrawGraphicsData(FramebufferManager* framebuffer_manager
 
   // The EFB cache is now potentially stale.
   g_framebuffer_manager->FlagPeekCacheAsOutOfDate();
+
+  if (telemetry)
+  {
+    const u64 drawgfx_us = Common::Timer::NowUs() - drawgfx_start;
+    telemetry_instance.AddDrawGfxUs(drawgfx_us);
+    // Attribute the draw cost to the replay pass when it is the one issuing it,
+    // so the report can isolate variant-dispatch/state-restore overhead
+    // (replay_us - replay_draw_us) from the actual GPU submission cost.
+    if (telemetry_instance.InReplay())
+      telemetry_instance.AddReplayDrawUs(drawgfx_us);
+    telemetry_instance.AddDrawIssued();
+    telemetry_instance.LogDraw(draw_call_data.index_size, draw_call_data.base_index,
+                               draw_call_data.base_vertex,
+                               static_cast<u32>(draw_call_data.textures.size()));
+  }
 }
