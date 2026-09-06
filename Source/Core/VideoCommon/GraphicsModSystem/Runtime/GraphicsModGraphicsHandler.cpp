@@ -17,30 +17,29 @@ GraphicsModGraphicsHandler::GraphicsModGraphicsHandler(FramebufferManager* frame
 {
 }
 
-RcTcacheEntry
-GraphicsModGraphicsHandler::OnFrameBufferCopy(IFramebufferRenderer* renderer,
-                                              PixelShaderManager& pixel_shader_manager,
-                                              EmulatedGraphics::FrameBufferCopyData copy_data)
+RcTcacheEntry GraphicsModGraphicsHandler::OnFramebufferCopy(
+    IFramebufferRenderer* renderer, PixelShaderManager& pixel_shader_manager,
+    EmulatedGraphics::FramebufferCopyResolvedData resolved_data)
 {
   auto& system = Core::System::GetInstance();
   auto& mod_manager = system.GetGraphicsModManager();
 
   FBInfo info;
-  info.m_width = copy_data.copy_width;
-  info.m_height = copy_data.copy_height;
-  info.m_texture_format = TexDecoder_GetEFBCopyBaseFormat(copy_data.efbcopy_format);
+  info.m_width = resolved_data.width;
+  info.m_height = resolved_data.height;
+  info.m_texture_format = TexDecoder_GetEFBCopyBaseFormat(resolved_data.efbcopy_format);
 
-  if (copy_data.pe_copy.copy_to_xfb == 0)
+  if (!resolved_data.is_xfb)
   {
     bool skip = false;
     u32 scaled_width;
     u32 scaled_height;
-    GraphicsModActionData::PreEFB efb{copy_data.copy_width, copy_data.copy_height, &skip,
+    GraphicsModActionData::PreEFB efb{resolved_data.width, resolved_data.height, &skip,
                                       &scaled_width, &scaled_height};
     mod_manager.GetBackend().OnEFBStarted(info, &efb);
     if (skip == true)
     {
-      renderer->UninitializeFramebufferMemory(copy_data);
+      renderer->UninitializeFramebufferMemory(resolved_data);
       return nullptr;
     }
   }
@@ -50,7 +49,7 @@ GraphicsModGraphicsHandler::OnFrameBufferCopy(IFramebufferRenderer* renderer,
   }
 
   auto render_target =
-      m_decorated_handler.OnFrameBufferCopy(renderer, pixel_shader_manager, copy_data);
+      m_decorated_handler.OnFramebufferCopy(renderer, pixel_shader_manager, resolved_data);
 
   if (!render_target)
     return nullptr;
@@ -58,7 +57,7 @@ GraphicsModGraphicsHandler::OnFrameBufferCopy(IFramebufferRenderer* renderer,
   GraphicsModSystem::TextureView texture;
   texture.hash_name = render_target->texture_info_name;
   texture.texture_data = render_target->texture.get();
-  if (copy_data.pe_copy.copy_to_xfb == 0)
+  if (!resolved_data.is_xfb)
   {
     texture.texture_type = GraphicsModSystem::TextureType::EFB;
   }
@@ -69,7 +68,7 @@ GraphicsModGraphicsHandler::OnFrameBufferCopy(IFramebufferRenderer* renderer,
 
   mod_manager.GetBackend().OnTextureCreate(texture);
 
-  if (copy_data.pe_copy.copy_to_xfb == 0)
+  if (!resolved_data.is_xfb)
   {
     GraphicsModActionData::PostEFB efb;
     mod_manager.GetBackend().OnEFBFinished(info, &efb);
@@ -82,11 +81,17 @@ GraphicsModGraphicsHandler::OnFrameBufferCopy(IFramebufferRenderer* renderer,
   return render_target;
 }
 
-void GraphicsModGraphicsHandler::OnFrameBufferClear(
+void GraphicsModGraphicsHandler::FlushFramebufferCopy(IFramebufferRenderer* renderer,
+                                                      const RcTcacheEntry& cache_entry)
+{
+  m_decorated_handler.FlushFramebufferCopy(renderer, cache_entry);
+}
+
+void GraphicsModGraphicsHandler::OnFramebufferClear(
     EmulatedGraphics::ClearCopyData clear_data,
     EmulatedGraphics::ScissorsAndViewportData scissors_and_viewport_data, bool is_xfb)
 {
-  m_decorated_handler.OnFrameBufferClear(clear_data, scissors_and_viewport_data, is_xfb);
+  m_decorated_handler.OnFramebufferClear(clear_data, scissors_and_viewport_data, is_xfb);
 }
 
 void GraphicsModGraphicsHandler::SetScissorAndViewport(
@@ -127,8 +132,8 @@ void GraphicsModGraphicsHandler::OnPaletteTexture(
   m_decorated_handler.OnPaletteTexture(std::move(palette_texture_data));
 }
 
-void GraphicsModGraphicsHandler::OnScaleTexture(
-    EmulatedGraphics::ScaleTextureData scale_texture_data)
+void GraphicsModGraphicsHandler::OnPartialTextureUpdate(
+    PartialTextureUpdateContext partial_texture_update_context)
 {
-  m_decorated_handler.OnScaleTexture(std::move(scale_texture_data));
+  m_decorated_handler.OnPartialTextureUpdate(std::move(partial_texture_update_context));
 }
