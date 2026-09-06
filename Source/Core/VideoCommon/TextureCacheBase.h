@@ -289,8 +289,6 @@ struct PartialTextureUpdateContext
 
   bool needs_scale = false;
   RcTcacheEntry source_scale_entry;
-  u32 source_scale_w = 0;
-  u32 source_scale_h = 0;
 
   // Store off the original target for reference during scale operation
   RcTcacheEntry target_prescaled_entry;

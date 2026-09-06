@@ -957,8 +957,6 @@ PartialTextureUpdateContext TextureCacheBase::BuildPartialUpdateContext(
   if (needs_scale)
   {
     context.needs_scale = true;
-    context.source_scale_w = src_width;
-    context.source_scale_h = src_height;
 
     const TextureConfig config(src_width, src_height, 1, source_entry->GetNumLayers(), 1,
                                AbstractTextureFormat::RGBA8, AbstractTextureFlag_RenderTarget,
@@ -1116,7 +1114,6 @@ void TextureCacheBase::ExecutePartialTextureUpdate(PartialTextureUpdateContext c
   {
     if (context.target_prescaled_entry)
     {
-      // Render into the target's existing (final-size) texture — no allocation, no swap
       g_gfx->ScaleTexture(target->framebuffer.get(), target->texture->GetConfig().GetRect(),
                           context.target_prescaled_entry->texture.get(),
                           context.target_prescaled_entry->texture->GetConfig().GetRect());
@@ -1125,8 +1122,10 @@ void TextureCacheBase::ExecutePartialTextureUpdate(PartialTextureUpdateContext c
 
     if (context.source_scale_entry)
     {
-      RenderScaledEntry(context.source_scale_entry, context.source_scale_w, context.source_scale_h,
-                        source->texture.get());
+      g_gfx->ScaleTexture(context.source_scale_entry->framebuffer.get(),
+                          context.source_scale_entry->texture->GetConfig().GetRect(),
+                          source->texture.get(), source->texture->GetConfig().GetRect());
+      context.source_scale_entry->texture->FinishedRendering();
       source = context.source_scale_entry;
     }
   }
