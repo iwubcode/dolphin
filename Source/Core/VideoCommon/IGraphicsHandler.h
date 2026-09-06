@@ -23,32 +23,38 @@ class IFramebufferRenderer;
 
 namespace EmulatedGraphics
 {
-struct FrameBufferCopyData
+struct FramebufferCopyResolvedData
 {
-  // Raw PE copy register data (kept for mod hooks that may inspect it):
-  UPE_Copy pe_copy;
-
-  // Destination address and dimensions:
+  // Source description
   u32 dest_address;
-  u32 copy_width;   // srcRect.GetWidth() = bpmem.copyTexSrcWH.x + 1
-  u32 copy_height;  // Final height after y_scale applied (for XFB) or srcRect.GetHeight() for EFB
-
-  // Stride and format:
   u32 dest_stride;
-  EFBCopyFormat efbcopy_format;  // Pre-computed: EFBCopyFormat::XFB or tp_realFormat()
-
-  // Derived parameters (pre-computed in BPStructs):
-  bool is_depth_copy;
-  bool is_intensity;  // pe_copy.intensity_fmt && pe_copy.auto_conv for EFB, false for XFB
-  bool half_scale;    // pe_copy.half_scale for EFB, false for XFB
-  float y_scale;      // For XFB: computed from scale_invert + dispcopyyscale. For EFB: 1.0f
-  float gamma;        // Pre-looked up from s_gammaLUT[pe_copy.gamma] - ready to use directly
-
+  u32 width;
+  u32 height;
+  EFBCopyFormat efbcopy_format;
+  PixelFormat pixel_format;
+  bool is_depth_format;
+  bool is_intensity_format;
+  bool half_scale;
+  float y_scale;
+  float gamma;
   MathUtil::Rectangle<int> src_rect;
-
   bool clamp_top;
   bool clamp_bottom;
   CopyFilterCoefficients::Values filter_coefficients;
+
+  // Derived
+  bool is_xfb;
+  bool copy_to_vram;
+  bool copy_to_ram;
+  u32 memory_width;
+  u32 memory_height;
+  u32 scaled_memory_width;
+  u32 scaled_memory_height;
+  TextureFormat memory_format;
+  u32 bytes_per_row;
+  u32 num_blocks_y;
+  u32 covered_range;
+  bool linear_filter;
 };
 
 struct ClearCopyData
@@ -117,7 +123,6 @@ struct ReinterpretTextureData
 {
   RcTcacheEntry existing_texture_entry;
   RcTcacheEntry reinterpreted_texture_entry;
-  TextureFormat new_format;
 };
 
 struct PaletteTextureData
@@ -139,14 +144,16 @@ class IGraphicsHandler
 public:
   virtual ~IGraphicsHandler() = default;
 
-  virtual RcTcacheEntry OnFrameBufferCopy(IFramebufferRenderer* renderer,
-                                          PixelShaderManager& pixel_shader_manager,
-                                          EmulatedGraphics::FrameBufferCopyData copy_data) = 0;
+  virtual RcTcacheEntry
+  OnFramebufferCopy(IFramebufferRenderer* renderer, PixelShaderManager& pixel_shader_manager,
+                    EmulatedGraphics::FramebufferCopyResolvedData resolved_data) = 0;
+  virtual void FlushFramebufferCopy(IFramebufferRenderer* renderer,
+                                    const RcTcacheEntry& cache_entry) = 0;
   virtual void
   SetScissorAndViewport(EmulatedGraphics::ScissorsAndViewportData scissors_and_viewport_data) = 0;
 
   virtual void
-  OnFrameBufferClear(EmulatedGraphics::ClearCopyData clear_data,
+  OnFramebufferClear(EmulatedGraphics::ClearCopyData clear_data,
                      EmulatedGraphics::ScissorsAndViewportData scissors_and_viewport_data,
                      bool is_xfb) = 0;
 
@@ -160,5 +167,6 @@ public:
   virtual void
   OnReinterpretTexture(EmulatedGraphics::ReinterpretTextureData reinterpret_texture_data) = 0;
   virtual void OnPaletteTexture(EmulatedGraphics::PaletteTextureData palette_texture_data) = 0;
-  virtual void OnScaleTexture(EmulatedGraphics::ScaleTextureData scale_texture_data) = 0;
+  virtual void
+  OnPartialTextureUpdate(PartialTextureUpdateContext partial_texture_update_context) = 0;
 };
