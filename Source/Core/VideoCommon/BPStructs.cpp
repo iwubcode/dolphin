@@ -290,22 +290,21 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
     // (Zbuffer uses 24-bit Format)
     const bool is_depth_copy = bpmem.zcontrol.pixel_format == PixelFormat::Z24;
 
-    EmulatedGraphics::FrameBufferCopyData copy_data{
-        .pe_copy = PE_copy,
-        .dest_address = destAddr,
-        .copy_width = static_cast<u32>(srcRect.GetWidth()),
-        .copy_height = static_cast<u32>(srcRect.GetHeight()),
-        .dest_stride = destStride,
-        .efbcopy_format = PE_copy.tp_realFormat(),
-        .is_depth_copy = is_depth_copy,
-        .is_intensity = PE_copy.intensity_fmt && PE_copy.auto_conv,
-        .half_scale = PE_copy.half_scale,
-        .y_scale = 1.0f,
-        .gamma = s_gammaLUT[PE_copy.gamma],
-        .src_rect = srcRect,
-        .clamp_top = bpmem.triggerEFBCopy.clamp_top,
-        .clamp_bottom = bpmem.triggerEFBCopy.clamp_bottom,
-        .filter_coefficients = bpmem.copyfilter.GetCoefficients()};
+    FrameBufferCopyRawData copy_data{.pe_copy = PE_copy,
+                                     .dest_address = destAddr,
+                                     .copy_width = static_cast<u32>(srcRect.GetWidth()),
+                                     .copy_height = static_cast<u32>(srcRect.GetHeight()),
+                                     .dest_stride = destStride,
+                                     .efbcopy_format = PE_copy.tp_realFormat(),
+                                     .is_depth_copy = is_depth_copy,
+                                     .is_intensity = PE_copy.intensity_fmt && PE_copy.auto_conv,
+                                     .half_scale = PE_copy.half_scale,
+                                     .y_scale = 1.0f,
+                                     .gamma = s_gammaLUT[PE_copy.gamma],
+                                     .src_rect = srcRect,
+                                     .clamp_top = bpmem.triggerEFBCopy.clamp_top,
+                                     .clamp_bottom = bpmem.triggerEFBCopy.clamp_bottom,
+                                     .filter_coefficients = bpmem.copyfilter.GetCoefficients()};
 
     EmulatedGraphics::ClearCopyData clear_data{.src_rect = srcRect,
                                                .color_enable = bpmem.blendmode.color_update != 0,
@@ -346,7 +345,8 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
                     copy_data.dest_stride, copy_data.copy_height, copy_data.y_scale);
     }
 
-    graphics_handler->OnFrameBufferCopy(g_texture_cache.get(), pixel_shader_manager, copy_data);
+    graphics_handler->OnFramebufferCopy(g_texture_cache.get(), pixel_shader_manager,
+                                        TextureCacheBase::ResolveFramebufferCopyData(copy_data));
 
     if (PE_copy.copy_to_xfb != 0)
     {
@@ -385,7 +385,7 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager& 
     if (PE_copy.clear)
     {
       const bool is_xfb = PE_copy.copy_to_xfb != 0;
-      graphics_handler->OnFrameBufferClear(clear_data, scissors_and_viewport_data, is_xfb);
+      graphics_handler->OnFramebufferClear(clear_data, scissors_and_viewport_data, is_xfb);
     }
 
     return;
