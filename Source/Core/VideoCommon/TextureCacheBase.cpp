@@ -844,7 +844,78 @@ PartialTextureUpdateContext TextureCacheBase::BuildPartialUpdateContext(
   PartialTextureUpdateContext context;
   context.target_entry = target;
   context.source_entry = source_entry;
-  context.is_palette_texture = is_palette_texture;
+
+  u32 src_x, src_y, dst_x, dst_y;
+
+  // Note for understanding the math:
+  // Normal textures can't be strided, so the 2 missing cases with src_x > 0 don't exist
+  if (source_entry->addr >= target->addr)
+  {
+    u32 block_offset = (source_entry->addr - target->addr) / block_size;
+    u32 block_x = block_offset % numBlocksX;
+    u32 block_y = block_offset / numBlocksX;
+    src_x = 0;
+    src_y = 0;
+    dst_x = block_x * block_width;
+    dst_y = block_y * block_height;
+  }
+  else
+  {
+    u32 block_offset = (target->addr - source_entry->addr) / block_size;
+    u32 block_x = (~block_offset + 1) % numBlocksX;
+    u32 block_y = (block_offset + block_x) / numBlocksX;
+    src_x = 0;
+    src_y = block_y * block_height;
+    dst_x = block_x * block_width;
+    dst_y = 0;
+  }
+
+  u32 copy_width = std::min(source->native_width - src_x, target->native_width - dst_x);
+  u32 copy_height = std::min(source->native_height - src_y, target->native_height - dst_y);
+
+  // If one of the textures is scaled, scale both with the current efb scaling factor
+  const bool needs_scale =
+      target->native_width != target->GetWidth() || target->native_height != target->GetHeight() ||
+      source->native_width != source->GetWidth() || source->native_height != source->GetHeight();
+
+  u32 src_width, src_height, dst_width, dst_height;
+  if (needs_scale)
+  {
+    src_x = g_framebuffer_manager->EFBToScaledX(src_x);
+    src_y = g_framebuffer_manager->EFBToScaledY(src_y);
+    dst_x = g_framebuffer_manager->EFBToScaledX(dst_x);
+    dst_y = g_framebuffer_manager->EFBToScaledY(dst_y);
+    copy_width = g_framebuffer_manager->EFBToScaledX(copy_width);
+    copy_height = g_framebuffer_manager->EFBToScaledY(copy_height);
+
+    src_width = g_framebuffer_manager->EFBToScaledX(source->native_width);
+    src_height = g_framebuffer_manager->EFBToScaledY(source->native_height);
+    dst_width = g_framebuffer_manager->EFBToScaledX(target->native_width);
+    dst_height = g_framebuffer_manager->EFBToScaledY(target->native_height);
+  }
+  else
+  {
+    src_width = source->GetWidth();
+    src_height = source->GetHeight();
+    dst_width = target->GetWidth();
+    dst_height = target->GetHeight();
+  }
+
+  context.src_rect = {static_cast<int>(src_x), static_cast<int>(src_y),
+                      static_cast<int>(src_x + copy_width), static_cast<int>(src_y + copy_height)};
+  context.dst_rect = {static_cast<int>(dst_x), static_cast<int>(dst_y),
+                      static_cast<int>(dst_x + copy_width), static_cast<int>(dst_y + copy_height)};
+
+  // If the source rectangle is outside of what we actually have in VRAM, skip the copy.
+  // The backend doesn't do any clamping, so if we don't, we'd pass out-of-range coordinates
+  // to the graphics driver, which can cause GPU resets.
+  if (static_cast<u32>(context.src_rect.right) > src_width ||
+      static_cast<u32>(context.src_rect.bottom) > src_height ||
+      static_cast<u32>(context.dst_rect.right) > dst_width ||
+      static_cast<u32>(context.dst_rect.bottom) > dst_height)
+  {
+    return {};
+  }
 
   // If the texture formats are not compatible or convertible, skip it.
   if (!IsCompatibleTextureFormat(target->format.texfmt, source_entry->format.texfmt))
@@ -883,63 +954,24 @@ PartialTextureUpdateContext TextureCacheBase::BuildPartialUpdateContext(
     source_entry = context.palette_entry;
   }
 
-  u32 src_x, src_y, dst_x, dst_y;
-
-  // Note for understanding the math:
-  // Normal textures can't be strided, so the 2 missing cases with src_x > 0 don't exist
-  if (source_entry->addr >= target->addr)
-  {
-    u32 block_offset = (source_entry->addr - target->addr) / block_size;
-    u32 block_x = block_offset % numBlocksX;
-    u32 block_y = block_offset / numBlocksX;
-    src_x = 0;
-    src_y = 0;
-    dst_x = block_x * block_width;
-    dst_y = block_y * block_height;
-  }
-  else
-  {
-    u32 block_offset = (target->addr - source_entry->addr) / block_size;
-    u32 block_x = (~block_offset + 1) % numBlocksX;
-    u32 block_y = (block_offset + block_x) / numBlocksX;
-    src_x = 0;
-    src_y = block_y * block_height;
-    dst_x = block_x * block_width;
-    dst_y = 0;
-  }
-
-  u32 copy_width = std::min(source_entry->native_width - src_x, target->native_width - dst_x);
-  u32 copy_height = std::min(source_entry->native_height - src_y, target->native_height - dst_y);
-
-  // If one of the textures is scaled, scale both with the current efb scaling factor
-  if (target->native_width != target->GetWidth() || target->native_height != target->GetHeight() ||
-      source_entry->native_width != source_entry->GetWidth() ||
-      source_entry->native_height != source_entry->GetHeight())
+  if (needs_scale)
   {
     context.needs_scale = true;
+    context.source_scale_w = src_width;
+    context.source_scale_h = src_height;
 
-    const TextureConfig config(g_framebuffer_manager->EFBToScaledX(source_entry->native_width),
-                               g_framebuffer_manager->EFBToScaledY(source_entry->native_height), 1,
-                               source_entry->GetNumLayers(), 1, AbstractTextureFormat::RGBA8,
-                               AbstractTextureFlag_RenderTarget,
+    const TextureConfig config(src_width, src_height, 1, source_entry->GetNumLayers(), 1,
+                               AbstractTextureFormat::RGBA8, AbstractTextureFlag_RenderTarget,
                                AbstractTextureType::Texture_2DArray);
     context.source_scale_entry = AllocateCacheEntry(config);
     if (!context.source_scale_entry)
       return {};
 
-    context.source_scale_w = g_framebuffer_manager->EFBToScaledX(source_entry->native_width);
-    context.source_scale_h = g_framebuffer_manager->EFBToScaledY(source_entry->native_height);
-
-    const u32 target_scale_w =
-        static_cast<u32>(g_framebuffer_manager->EFBToScaledX(target->native_width));
-    const u32 target_scale_h =
-        static_cast<u32>(g_framebuffer_manager->EFBToScaledY(target->native_height));
-    if (target->GetWidth() != target_scale_w || target->GetHeight() != target_scale_h)
+    if (target->GetWidth() != dst_width || target->GetHeight() != dst_height)
     {
-      const TextureConfig scaled_config(target_scale_w, target_scale_h, 1, target->GetNumLayers(),
-                                        1, AbstractTextureFormat::RGBA8,
-                                        AbstractTextureFlag_RenderTarget,
-                                        AbstractTextureType::Texture_2DArray);
+      const TextureConfig scaled_config(
+          dst_width, dst_height, 1, target->GetNumLayers(), 1, AbstractTextureFormat::RGBA8,
+          AbstractTextureFlag_RenderTarget, AbstractTextureType::Texture_2DArray);
       auto scaled = AllocateCacheEntry(scaled_config);
       if (!scaled)
         return {};
@@ -952,19 +984,7 @@ PartialTextureUpdateContext TextureCacheBase::BuildPartialUpdateContext(
       // Keep the unscaled contents for the scale operation
       context.target_prescaled_entry = scaled;
     }
-
-    src_x = g_framebuffer_manager->EFBToScaledX(src_x);
-    src_y = g_framebuffer_manager->EFBToScaledY(src_y);
-    dst_x = g_framebuffer_manager->EFBToScaledX(dst_x);
-    dst_y = g_framebuffer_manager->EFBToScaledY(dst_y);
-    copy_width = g_framebuffer_manager->EFBToScaledX(copy_width);
-    copy_height = g_framebuffer_manager->EFBToScaledY(copy_height);
   }
-
-  context.src_rect = {static_cast<int>(src_x), static_cast<int>(src_y),
-                      static_cast<int>(src_x + copy_width), static_cast<int>(src_y + copy_height)};
-  context.dst_rect = {static_cast<int>(dst_x), static_cast<int>(dst_y),
-                      static_cast<int>(dst_x + copy_width), static_cast<int>(dst_y + copy_height)};
 
   // If one copy is stereo, and the other isn't... not much we can do here :/
   context.layers_to_copy = std::min(source->GetNumLayers(), target->GetNumLayers());
@@ -1015,7 +1035,6 @@ RcTcacheEntry TextureCacheBase::DoPartialTextureUpdates(RcTcacheEntry& entry_to_
 
   // Save off overlapping entries first so that we can cleanly invalidate textures
   // without causing iterator invalidation
-  std::vector<RcTcacheEntry> partial_texture_update_entries;
   while (iter.first != iter.second)
   {
     auto& entry = iter.first->second;
@@ -1024,13 +1043,13 @@ RcTcacheEntry TextureCacheBase::DoPartialTextureUpdates(RcTcacheEntry& entry_to_
         entry->OverlapsMemoryRange(entry_to_update->addr, entry_to_update->size_in_bytes) &&
         entry->memory_stride == numBlocksX * block_size)
     {
-      partial_texture_update_entries.push_back(entry);
+      m_partial_texture_update_entries.push_back(entry);
     }
     ++iter.first;
   }
 
   // Execute our partial texture updates
-  for (const auto& entry : partial_texture_update_entries)
+  for (const auto& entry : m_partial_texture_update_entries)
   {
     auto context =
         BuildPartialUpdateContext(entry_to_update, entry, palette, tlutfmt, isPaletteTexture,
@@ -1042,6 +1061,9 @@ RcTcacheEntry TextureCacheBase::DoPartialTextureUpdates(RcTcacheEntry& entry_to_
       graphics_manager.GetGraphicsHandler()->OnPartialTextureUpdate(std::move(context));
     }
   }
+
+  // The partial texture updates are no longer needed
+  m_partial_texture_update_entries.clear();
 
   return entry_to_update;
 }
@@ -1107,17 +1129,6 @@ void TextureCacheBase::ExecutePartialTextureUpdate(PartialTextureUpdateContext c
                         source->texture.get());
       source = context.source_scale_entry;
     }
-  }
-
-  // If the source rectangle is outside of what we actually have in VRAM, skip the copy.
-  // The backend doesn't do any clamping, so if we don't, we'd pass out-of-range coordinates
-  // to the graphics driver, which can cause GPU resets.
-  if (static_cast<u32>(context.src_rect.right) > source->GetWidth() ||
-      static_cast<u32>(context.src_rect.bottom) > source->GetHeight() ||
-      static_cast<u32>(context.dst_rect.right) > target->GetWidth() ||
-      static_cast<u32>(context.dst_rect.bottom) > target->GetHeight())
-  {
-    return;
   }
 
   for (u32 layer = 0; layer < context.layers_to_copy; layer++)

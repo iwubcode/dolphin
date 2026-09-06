@@ -299,10 +299,6 @@ struct PartialTextureUpdateContext
   MathUtil::Rectangle<int> src_rect;
   MathUtil::Rectangle<int> dst_rect;
   u32 layers_to_copy = 0;
-
-  // Cleanup: if the source was a palette texture, the temporary decoded
-  // entry created at replay time must be invalidated after the copy.
-  bool is_palette_texture = false;
 };
 
 class TextureCacheBase : public IFramebufferRenderer
@@ -541,6 +537,10 @@ private:
   // m_bound_textures are actually active in the current draw
   // It's valid for textures to be in here after they've been invalidated
   std::array<RcTcacheEntry, 8> m_bound_textures{};
+
+  // Overlapping entries collected during partial texture updates.
+  // Kept as a member so the buffer capacity is preserved across calls.
+  std::vector<RcTcacheEntry> m_partial_texture_update_entries;
 
   TexPool m_texture_pool;
   u64 m_last_entry_id = 0;
