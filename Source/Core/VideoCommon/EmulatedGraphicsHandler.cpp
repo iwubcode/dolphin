@@ -36,18 +36,17 @@ EmulatedGraphicsHandler::EmulatedGraphicsHandler(FramebufferManager* frame_buffe
 {
 }
 
-RcTcacheEntry
-EmulatedGraphicsHandler::OnFrameBufferCopy(IFramebufferRenderer* renderer,
-                                           PixelShaderManager& pixel_shader_manager,
-                                           EmulatedGraphics::FrameBufferCopyData copy_data)
+RcTcacheEntry EmulatedGraphicsHandler::OnFramebufferCopy(
+    IFramebufferRenderer* renderer, PixelShaderManager& pixel_shader_manager,
+    EmulatedGraphics::FramebufferCopyResolvedData resolved_data)
 {
   RcTcacheEntry entry;
-  if (copy_data.dest_stride != 0)
+  if (resolved_data.dest_stride != 0)
   {
     // Check if we are to copy from the EFB or draw to the XFB
-    if (copy_data.pe_copy.copy_to_xfb == 0)
+    if (!resolved_data.is_xfb)
     {
-      entry = renderer->RenderFramebufferCopy(pixel_shader_manager, copy_data);
+      entry = renderer->RenderFramebufferCopy(pixel_shader_manager, resolved_data);
     }
     else
     {
@@ -56,14 +55,20 @@ EmulatedGraphicsHandler::OnFrameBufferCopy(IFramebufferRenderer* renderer,
       // the number of lines copied is determined by the y scale * source efb height
       g_bounding_box->Disable(pixel_shader_manager);
 
-      entry = renderer->RenderFramebufferCopy(pixel_shader_manager, copy_data);
+      entry = renderer->RenderFramebufferCopy(pixel_shader_manager, resolved_data);
     }
   }
 
   return entry;
 }
 
-void EmulatedGraphicsHandler::OnFrameBufferClear(
+void EmulatedGraphicsHandler::FlushFramebufferCopy(IFramebufferRenderer* renderer,
+                                                   const RcTcacheEntry& cache_entry)
+{
+  renderer->FlushFramebufferCopy(cache_entry);
+}
+
+void EmulatedGraphicsHandler::OnFramebufferClear(
     EmulatedGraphics::ClearCopyData clear_data,
     EmulatedGraphics::ScissorsAndViewportData scissors_and_viewport_data, bool)
 {
@@ -180,7 +185,7 @@ void EmulatedGraphicsHandler::OnReinterpretTexture(
       reinterpret_texture_data.reinterpreted_texture_entry,
       reinterpret_texture_data.existing_texture_entry->texture.get(),
       reinterpret_texture_data.existing_texture_entry->format.texfmt,
-      reinterpret_texture_data.new_format);
+      reinterpret_texture_data.reinterpreted_texture_entry->format.texfmt);
 }
 
 void EmulatedGraphicsHandler::OnPaletteTexture(
@@ -191,7 +196,8 @@ void EmulatedGraphicsHandler::OnPaletteTexture(
       palette_texture_data.existing_texture_entry->texture.get(), palette_texture_data.tlutfmt);
 }
 
-void EmulatedGraphicsHandler::OnScaleTexture(EmulatedGraphics::ScaleTextureData scale_texture_data)
+void EmulatedGraphicsHandler::OnPartialTextureUpdate(
+    PartialTextureUpdateContext partial_texture_update_context)
 {
-  g_texture_cache->RenderScaledEntry(scale_texture_data.existing_entry_scaled);
+  g_texture_cache->ExecutePartialTextureUpdate(std::move(partial_texture_update_context));
 }

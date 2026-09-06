@@ -5,6 +5,7 @@
 #include "VideoCommon/EFBInterface.h"
 #include "VideoCommon/EmulatedGraphicsHandler.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/DeferredGraphicsHandler.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/DeferredPerfTelemetry.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModGraphicsHandler.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModManager.h"
 #include "VideoCommon/IGraphicsHandler.h"
@@ -163,6 +164,7 @@ void EmulatedGraphicsManager::SettingsChanged()
     if (!should_defer)
     {
       m_graphics_handler = m_normal_graphicsmod_graphics_handler.get();
+      DeferredPerf::Telemetry::Get().SetMode(DeferredPerf::Mode::Normal);
     }
     else
     {
@@ -171,15 +173,18 @@ void EmulatedGraphicsManager::SettingsChanged()
         // Need to force a native resolution version as well
         g_efb_interface->SetFramebufferManager(m_native_framebuffer_manager.get());
         m_graphics_handler = m_deferred_native_graphics_handler.get();
+        DeferredPerf::Telemetry::Get().SetMode(DeferredPerf::Mode::DeferredNativeEfb);
       }
       else
       {
         m_graphics_handler = m_deferred_graphics_handler.get();
+        DeferredPerf::Telemetry::Get().SetMode(DeferredPerf::Mode::Deferred);
       }
     }
   }
   else
   {
     m_graphics_handler = m_normal_graphics_handler.get();
+    DeferredPerf::Telemetry::Get().SetMode(DeferredPerf::Mode::Normal);
   }
 }

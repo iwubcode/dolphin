@@ -9,7 +9,7 @@
 
 namespace EmulatedGraphics
 {
-struct FrameBufferCopyData;
+struct FramebufferCopyResolvedData;
 struct ClearCopyData;
 struct ScissorsAndViewportData;
 }  // namespace EmulatedGraphics
@@ -25,9 +25,11 @@ public:
   // representing the framebuffer
   virtual std::shared_ptr<TCacheEntry>
   RenderFramebufferCopy(PixelShaderManager& pixel_shader_manager,
-                        EmulatedGraphics::FrameBufferCopyData copy_data) = 0;
+                        const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data) = 0;
+
+  virtual void FlushFramebufferCopy(const std::shared_ptr<TCacheEntry>& entry) = 0;
 
   // Uninitialize memory when a framebuffer copy is skipped.
-  virtual void
-  UninitializeFramebufferMemory(const EmulatedGraphics::FrameBufferCopyData& copy_data) = 0;
+  virtual void UninitializeFramebufferMemory(
+      const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data) = 0;
 };
