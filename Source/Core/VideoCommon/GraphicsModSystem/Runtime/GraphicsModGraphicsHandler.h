@@ -13,11 +13,14 @@ public:
   explicit GraphicsModGraphicsHandler(FramebufferManager* frame_buffer_manager,
                                       bool attempt_copy_efb_to_ram);
 
-  RcTcacheEntry OnFrameBufferCopy(IFramebufferRenderer* renderer,
-                                  PixelShaderManager& pixel_shader_manager,
-                                  EmulatedGraphics::FrameBufferCopyData copy_data) override;
+  RcTcacheEntry
+  OnFramebufferCopy(IFramebufferRenderer* renderer, PixelShaderManager& pixel_shader_manager,
+                    EmulatedGraphics::FramebufferCopyResolvedData resolved_data) override;
 
-  void OnFrameBufferClear(EmulatedGraphics::ClearCopyData clear_data,
+  void FlushFramebufferCopy(IFramebufferRenderer* renderer,
+                            const RcTcacheEntry& cache_entry) override;
+
+  void OnFramebufferClear(EmulatedGraphics::ClearCopyData clear_data,
                           EmulatedGraphics::ScissorsAndViewportData scissors_and_viewport_data,
                           bool is_xfb) override;
 
@@ -32,7 +35,7 @@ public:
   void
   OnReinterpretTexture(EmulatedGraphics::ReinterpretTextureData reinterpret_texture_data) override;
   void OnPaletteTexture(EmulatedGraphics::PaletteTextureData palette_texture_data) override;
-  void OnScaleTexture(EmulatedGraphics::ScaleTextureData scale_texture_data) override;
+  void OnPartialTextureUpdate(PartialTextureUpdateContext partial_texture_update_context) override;
 
 private:
   EmulatedGraphicsHandler m_decorated_handler;

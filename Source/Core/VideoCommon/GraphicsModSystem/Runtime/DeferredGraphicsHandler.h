@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 #include "VideoCommon/AbstractGfx.h"
@@ -25,11 +26,14 @@ public:
   explicit DeferredGraphicsHandler(XFBFrame* frame,
                                    FramebufferManager* native_efb_framebuffer_manager);
 
-  RcTcacheEntry OnFrameBufferCopy(IFramebufferRenderer* renderer,
-                                  PixelShaderManager& pixel_shader_manager,
-                                  EmulatedGraphics::FrameBufferCopyData copy_data) override;
+  RcTcacheEntry
+  OnFramebufferCopy(IFramebufferRenderer* renderer, PixelShaderManager& pixel_shader_manager,
+                    EmulatedGraphics::FramebufferCopyResolvedData resolved_data) override;
 
-  void OnFrameBufferClear(EmulatedGraphics::ClearCopyData clear_data,
+  void FlushFramebufferCopy(IFramebufferRenderer* renderer,
+                            const std::shared_ptr<TCacheEntry>& cache_entry) override;
+
+  void OnFramebufferClear(EmulatedGraphics::ClearCopyData clear_data,
                           EmulatedGraphics::ScissorsAndViewportData scissors_and_viewport_data,
                           bool is_xfb) override;
 
@@ -44,15 +48,16 @@ public:
   void
   OnReinterpretTexture(EmulatedGraphics::ReinterpretTextureData reinterpret_texture_data) override;
   void OnPaletteTexture(EmulatedGraphics::PaletteTextureData palette_texture_data) override;
-  void OnScaleTexture(EmulatedGraphics::ScaleTextureData scale_texture_data) override;
+  void OnPartialTextureUpdate(PartialTextureUpdateContext partial_texture_update_context) override;
 
 private:
   std::shared_ptr<TCacheEntry>
   RenderFramebufferCopy(PixelShaderManager& pixel_shader_manager,
-                        EmulatedGraphics::FrameBufferCopyData copy_data) override;
+                        const EmulatedGraphics::FramebufferCopyResolvedData& copy_data) override;
+  void FlushFramebufferCopy(const std::shared_ptr<TCacheEntry>& cache_entry) override;
 
-  void
-  UninitializeFramebufferMemory(const EmulatedGraphics::FrameBufferCopyData& copy_data) override;
+  void UninitializeFramebufferMemory(
+      const EmulatedGraphics::FramebufferCopyResolvedData& copy_data) override;
 
   void DrawEmulatedMesh(
       const GraphicsModSystem::DrawDataView& draw_data,
@@ -68,16 +73,15 @@ private:
                       VideoCommon::SkeletonInstance* skeleton_instance) override;
 
   void DrawXFBFrame();
-  void DrawEFBCopy();
+  void DrawNativeEFBCopy(std::size_t first_operation_index, std::size_t last_operation_index);
 
   XFBFrame* m_xfb_frame;
   std::optional<AbstractGfx::ViewportAndScissor> m_previous_frame_scissors_viewport;
   FramebufferManager* m_native_efb_framebuffer_manager;
 
-  // Reference our xfb frame operations, for a *potential* EFB
-  // that could be flushed, this avoids the cost of double drawing
-  // when we don't need it
-  std::vector<std::size_t> m_native_efb_operations;
+  // A map of the native EFB to
+  std::unordered_map<TCacheEntry*, std::size_t> m_deferred_native_efb_to_last_operation_index;
+  std::size_t m_last_native_efb_operation_index = 0;
 
   GraphicsModGraphicsHandler m_graphics_mod_handler;
 };
