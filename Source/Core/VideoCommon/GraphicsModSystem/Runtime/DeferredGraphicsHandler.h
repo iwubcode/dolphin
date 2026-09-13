@@ -76,8 +76,18 @@ private:
   void DrawNativeEFBCopy(std::size_t first_operation_index, std::size_t last_operation_index);
 
   XFBFrame* m_xfb_frame;
-  std::optional<AbstractGfx::ViewportAndScissor> m_previous_frame_scissors_viewport;
   FramebufferManager* m_native_efb_framebuffer_manager;
+
+  // Last known viewport/scissor per rendering target, persisted across replays.
+  // Used to re-establish correct GPU state at the start of a replay when the game
+  // did not issue a new ScissorViewport operation this frame.
+  std::optional<EmulatedGraphics::ScissorsAndViewportData> m_native_scissor_viewport;
+  std::optional<EmulatedGraphics::ScissorsAndViewportData> m_main_scissor_viewport;
+
+  // Finds the last ScissorViewport op in [first, last) and stores it into *out.
+  void UpdateTrackedScissorViewport(const XFBFrame::FrameView& view, std::size_t first,
+                                    std::size_t last,
+                                    std::optional<EmulatedGraphics::ScissorsAndViewportData>* out);
 
   // A map of the native EFB to
   std::unordered_map<TCacheEntry*, std::size_t> m_deferred_native_efb_to_last_operation_index;

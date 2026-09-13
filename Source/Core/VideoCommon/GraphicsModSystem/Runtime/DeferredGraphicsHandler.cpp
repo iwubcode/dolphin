@@ -13,11 +13,66 @@
 
 namespace
 {
+/// RAII guard that makes a replay pass a self-contained transaction on GPU state.
+///
+/// On construction:
+///   - Saves g_gfx's stored viewport/scissor bookmark (the value EndUtilityDrawing
+///     restores to), the currently bound framebuffer, and the live viewport/scissor,
+///     so none of it can be corrupted by the replay.
+///   - Applies `initial` (this target's last-known viewport/scissor) to the GPU,
+///     establishing a correct starting point even if utility drawing reset the GPU
+///     state since the previous replay. This call does mutate the global store and
+///     live state, but both are undone when the guard is destroyed.
+///
+/// On destruction:
+///   - Restores the saved bookmark, framebuffer binding, and viewport/scissor, so any
+///     subsequent GPU work (main-pass draws, texture uploads, utility drawing) sees
+///     exactly the state that existed before the replay began.
+class ScopedRenderState
+{
+public:
+  ScopedRenderState(FramebufferManager* fbm,
+                    const std::optional<EmulatedGraphics::ScissorsAndViewportData>& initial)
+      : m_saved(g_gfx->GetStoredViewportAndScissor()),
+        m_saved_framebuffer(g_gfx->GetCurrentFramebuffer())
+  {
+    if (initial.has_value())
+    {
+      BPFunctions::SetScissorAndViewport(fbm, initial->scissor_top_left,
+                                         initial->scissor_bottom_right, initial->scissor_offset,
+                                         initial->viewport);
+    }
+  }
+
+  ~ScopedRenderState()
+  {
+    // Restore the stored bookmark so EndUtilityDrawing restores a correct value.
+    g_gfx->StoreViewportAndScissor(m_saved);
+
+    // Restore the live GPU state (framebuffer binding, viewport, scissor) so that no
+    // target-specific values leak into subsequent work outside this replay scope.
+    if (m_saved_framebuffer)
+      g_gfx->SetFramebuffer(m_saved_framebuffer);
+    g_gfx->SetViewport(m_saved.viewport_x, m_saved.viewport_y, m_saved.viewport_width,
+                       m_saved.viewport_height, m_saved.viewport_near_depth,
+                       m_saved.viewport_far_depth);
+    g_gfx->SetScissorRect(m_saved.scissor_rect);
+  }
+
+  ScopedRenderState(const ScopedRenderState&) = delete;
+  ScopedRenderState& operator=(const ScopedRenderState&) = delete;
+
+private:
+  AbstractGfx::ViewportAndScissor m_saved;
+  AbstractFramebuffer* m_saved_framebuffer;
+};
+
 void ReplayOperations(EmulatedGraphicsHandler& emulated_graphics_handler,
                       FramebufferManager* frame_buffer_manager,
                       const XFBFrame::FrameView& frame_view,
                       std::span<const XFBFrame::UniformState> uniform_state, auto indices,
-                      bool replaying_xfb)
+                      bool replaying_xfb, const char* op_dump_pass_name,
+                      const std::optional<EmulatedGraphics::ScissorsAndViewportData>& op_dump_seed)
 {
   auto& system = Core::System::GetInstance();
   auto& geometry_shader_manager = system.GetGeometryShaderManager();
@@ -30,11 +85,18 @@ void ReplayOperations(EmulatedGraphicsHandler& emulated_graphics_handler,
   if (telemetry)
   {
     telemetry_instance.BeginReplay();
+    telemetry_instance.BeginOpDump(op_dump_pass_name, op_dump_seed);
     replay_start = Common::Timer::NowUs();
   }
 
   for (const std::size_t index : indices)
   {
+    // Re-establish the target framebuffer. Ops that trigger utility passes (Clear, texture
+    // reinterpret, palette decode, etc.) call EndUtilityDrawing which rebinds to the main EFB;
+    // this ensures every op starts on the intended replay target. SetFramebuffer is a no-op when
+    // already bound, so this has zero cost for ops that don't change the binding.
+    frame_buffer_manager->BindEFBFramebuffer();
+
     const XFBFrame::OperationReference& operation_reference = frame_view.operations[index];
     if (telemetry)
       telemetry_instance.AddOpReplayed(operation_reference.type);
@@ -61,9 +123,14 @@ void ReplayOperations(EmulatedGraphicsHandler& emulated_graphics_handler,
             std::get<VertexShaderConstants>(uniform_state[*draw_call_data.vertex_constant_index]);
         vertex_shader_manager.dirty = true;
       }
-      // Determine if it is a custom or emulated mesh
       if (telemetry)
+      {
         telemetry_instance.AddDrawReplayed();
+        telemetry_instance.LogDrawOp(draw_call_data.draw_call_data,
+                                     draw_call_data.geometry_constant_index.has_value(),
+                                     draw_call_data.pixel_constant_index.has_value(),
+                                     draw_call_data.vertex_constant_index.has_value());
+      }
       g_vertex_manager->DrawGraphicsData(frame_buffer_manager, draw_call_data.draw_call_data);
       break;
     }
@@ -71,6 +138,8 @@ void ReplayOperations(EmulatedGraphicsHandler& emulated_graphics_handler,
     {
       const XFBFrame::RenderTargetData& render_target_data =
           frame_view.render_targets[operation_reference.index];
+      if (telemetry)
+        telemetry_instance.LogRenderTargetOp(render_target_data.resolved_copy_data);
       if (render_target_data.cache_entry &&
           render_target_data.resolved_copy_data.dest_stride != 0 && replaying_xfb)
       {
@@ -80,6 +149,9 @@ void ReplayOperations(EmulatedGraphicsHandler& emulated_graphics_handler,
       break;
     }
     case XFBFrame::OperationType::ScissorViewport:
+      if (telemetry)
+        telemetry_instance.LogScissorViewportOp(
+            frame_view.scissors_viewports[operation_reference.index]);
       emulated_graphics_handler.SetScissorAndViewport(
           frame_view.scissors_viewports[operation_reference.index]);
       break;
@@ -87,6 +159,8 @@ void ReplayOperations(EmulatedGraphicsHandler& emulated_graphics_handler,
     {
       const EmulatedGraphics::ClearCopyData& clear_data =
           frame_view.clears[operation_reference.index];
+      if (telemetry)
+        telemetry_instance.LogClearOp(clear_data);
       BPFunctions::ClearScreen(frame_buffer_manager, clear_data.src_rect, clear_data.color_enable,
                                clear_data.alpha_enable, clear_data.z_enable,
                                clear_data.pixel_format, clear_data.color_ar, clear_data.color_gb,
@@ -94,25 +168,39 @@ void ReplayOperations(EmulatedGraphicsHandler& emulated_graphics_handler,
       break;
     }
     case XFBFrame::OperationType::PixelEngine:
+      if (telemetry)
+        telemetry_instance.LogPixelEngineOp(frame_view.pixel_engine[operation_reference.index]);
       if (!replaying_xfb)
         continue;
       emulated_graphics_handler.PixelEngineOperation(
           frame_view.pixel_engine[operation_reference.index], false, true);
       break;
     case XFBFrame::OperationType::PixelFormatChange:
+      if (telemetry)
+        telemetry_instance.LogPixelFormatChangeOp(
+            frame_view.pixel_format_changes[operation_reference.index]);
       emulated_graphics_handler.PixelFormatChange(
           frame_view.pixel_format_changes[operation_reference.index]);
       break;
     case XFBFrame::OperationType::ReinterpretTexture:
+      if (telemetry)
+        telemetry_instance.LogReinterpretTextureOp(
+            frame_view.reinterpret_textures[operation_reference.index]);
       emulated_graphics_handler.OnReinterpretTexture(
           frame_view.reinterpret_textures[operation_reference.index]);
       break;
     case XFBFrame::OperationType::PaletteTexture:
+      if (telemetry)
+        telemetry_instance.LogPaletteTextureOp(
+            frame_view.palette_textures[operation_reference.index]);
       emulated_graphics_handler.OnPaletteTexture(
           frame_view.palette_textures[operation_reference.index]);
       break;
     case XFBFrame::OperationType::PartialTextureUpdate:
     {
+      if (telemetry)
+        telemetry_instance.LogPartialTextureUpdateOp(
+            frame_view.partial_texture_updates[operation_reference.index]);
       emulated_graphics_handler.OnPartialTextureUpdate(
           frame_view.partial_texture_updates[operation_reference.index]);
       break;
@@ -125,6 +213,7 @@ void ReplayOperations(EmulatedGraphicsHandler& emulated_graphics_handler,
   if (telemetry)
   {
     telemetry_instance.AddReplayUs(Common::Timer::NowUs() - replay_start);
+    telemetry_instance.EndOpDump();
     telemetry_instance.EndReplay();
   }
 }
@@ -184,10 +273,17 @@ void DeferredGraphicsHandler::OnFramebufferClear(
 {
   if (m_native_efb_framebuffer_manager)
   {
+    ScopedRenderState guard(m_native_efb_framebuffer_manager, m_native_scissor_viewport);
+
     const bool attempt_copy_efb_to_ram = false;
     EmulatedGraphicsHandler emulated_graphics_handler(m_native_efb_framebuffer_manager,
                                                       attempt_copy_efb_to_ram);
     emulated_graphics_handler.OnFramebufferClear(clear_data, scissors_and_viewport_data, is_xfb);
+
+    // The native target's GPU state is now at this scissor/viewport. Copy (not move)
+    // because the non-XFB path below moves it into the frame record.
+    m_native_scissor_viewport.reset();
+    m_native_scissor_viewport.emplace(scissors_and_viewport_data);
   }
 
   if (is_xfb)
@@ -277,10 +373,15 @@ std::shared_ptr<TCacheEntry> DeferredGraphicsHandler::RenderFramebufferCopy(
     PixelShaderManager& pixel_shader_manager,
     const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data)
 {
-  RcTcacheEntry deferred_entry = g_texture_cache->DeferFramebufferCopy(
-      m_native_efb_framebuffer_manager != nullptr ? m_native_efb_framebuffer_manager :
-                                                    g_framebuffer_manager.get(),
-      resolved_data);
+  FramebufferManager* chosen_fbm = m_native_efb_framebuffer_manager != nullptr ?
+                                       m_native_efb_framebuffer_manager :
+                                       g_framebuffer_manager.get();
+
+  if (DeferredPerf::kTelemetryEnabled && DeferredPerf::kCopyStreamEnabled)
+    DeferredPerf::Telemetry::Get().LogRecordCopy(
+        chosen_fbm, chosen_fbm == m_native_efb_framebuffer_manager, resolved_data);
+
+  RcTcacheEntry deferred_entry = g_texture_cache->DeferFramebufferCopy(chosen_fbm, resolved_data);
 
   m_xfb_frame->AddRenderTargetData(XFBFrame::RenderTargetData{.resolved_copy_data = resolved_data,
                                                               .cache_entry = deferred_entry});
@@ -359,6 +460,25 @@ void DeferredGraphicsHandler::DrawCustomMesh(const GraphicsModSystem::DrawDataVi
   }
 }
 
+void DeferredGraphicsHandler::UpdateTrackedScissorViewport(
+    const XFBFrame::FrameView& view, std::size_t first, std::size_t last,
+    std::optional<EmulatedGraphics::ScissorsAndViewportData>* out)
+{
+  // Walk backward from the end of the range to find the most recent ScissorViewport.
+  // Draws do not modify viewport/scissor state, so this is the value the target was
+  // left in after replaying [first, last).
+  for (std::size_t i = last; i-- > first;)
+  {
+    const auto& op = view.operations[i];
+    if (op.type == XFBFrame::OperationType::ScissorViewport)
+    {
+      out->reset();
+      out->emplace(view.scissors_viewports[op.index]);
+      return;
+    }
+  }
+}
+
 void DeferredGraphicsHandler::DrawXFBFrame()
 {
   const bool telemetry = DeferredPerf::kTelemetryEnabled;
@@ -367,29 +487,17 @@ void DeferredGraphicsHandler::DrawXFBFrame()
   if (telemetry)
     drawxfb_start = Common::Timer::NowUs();
 
-  const AbstractGfx::ViewportAndScissor native_viewport_scissors =
-      g_gfx->GetStoredViewportAndScissor();
-  if (m_native_efb_framebuffer_manager)
-  {
-    // If we have a native EFB framebuffer, we would have drawn the
-    // EFB by now, potentially modifying our scissors/viewport stored
-    // to a different result than was actually at the start of our
-    // XFB, restore it
-    if (m_previous_frame_scissors_viewport)
-    {
-      g_gfx->SetViewport(m_previous_frame_scissors_viewport->viewport_x,
-                         m_previous_frame_scissors_viewport->viewport_y,
-                         m_previous_frame_scissors_viewport->viewport_width,
-                         m_previous_frame_scissors_viewport->viewport_height,
-                         m_previous_frame_scissors_viewport->viewport_near_depth,
-                         m_previous_frame_scissors_viewport->viewport_far_depth);
-      g_gfx->SetScissorRect(m_previous_frame_scissors_viewport->scissor_rect);
-      g_gfx->StoreViewportAndScissor(std::move(*m_previous_frame_scissors_viewport));
-    }
-  }
+  // Begin viewport-write capture BEFORE the guard so that the seed application done by
+  // ScopedRenderState's constructor is captured under this pass name.
+  if (telemetry && DeferredPerf::kViewportWriteCapture)
+    telemetry_instance.BeginViewportWriteCapture("main");
 
-  // Bind our normal (user IR) frame buffer
+  // Bind our normal (user IR) frame buffer before constructing the guard so that the
+  // saved framebuffer binding is the main EFB framebuffer. The guard restores this
+  // binding on destruction, leaving the GPU where XFB replay expects it to be.
   g_framebuffer_manager->BindEFBFramebuffer();
+
+  ScopedRenderState guard(g_framebuffer_manager.get(), m_main_scissor_viewport);
 
   // If necessary, we already did our copy to ram, no need to attempt it again
   const bool attempt_copy_efb_to_ram = false;
@@ -408,7 +516,12 @@ void DeferredGraphicsHandler::DrawXFBFrame()
 
   auto all_indices = std::views::iota(0ULL, view.operations.size());
   ReplayOperations(emulated_graphics_handler, g_framebuffer_manager.get(), view, uniform_state,
-                   all_indices, true);
+                   all_indices, true, "main", m_main_scissor_viewport);
+
+  if (telemetry && DeferredPerf::kViewportWriteCapture)
+    telemetry_instance.EndViewportWriteCapture();
+
+  UpdateTrackedScissorViewport(view, 0, view.operations.size(), &m_main_scissor_viewport);
 
   m_xfb_frame->Reset();
 
@@ -420,16 +533,19 @@ void DeferredGraphicsHandler::DrawXFBFrame()
     // Clear native operation tracking
     m_deferred_native_efb_to_last_operation_index.clear();
     m_last_native_efb_operation_index = 0;
-
-    // Save off our high resolution scissors/viewport, so we can use that as a base for the next
-    // frame
-    m_previous_frame_scissors_viewport = g_gfx->GetStoredViewportAndScissor();
   }
 }
 
 void DeferredGraphicsHandler::DrawNativeEFBCopy(std::size_t first_operation_index,
                                                 std::size_t last_operation_index)
 {
+  // Begin viewport-write capture BEFORE the guard so that the seed application done by
+  // ScopedRenderState's constructor is captured under this pass name.
+  if (DeferredPerf::kTelemetryEnabled && DeferredPerf::kViewportWriteCapture)
+    DeferredPerf::Telemetry::Get().BeginViewportWriteCapture("native_efb");
+
+  ScopedRenderState guard(m_native_efb_framebuffer_manager, m_native_scissor_viewport);
+
   // Bind our native frame buffer
   m_native_efb_framebuffer_manager->BindEFBFramebuffer();
 
@@ -441,5 +557,12 @@ void DeferredGraphicsHandler::DrawNativeEFBCopy(std::size_t first_operation_inde
   const XFBFrame::FrameView view = m_xfb_frame->GetView();
   auto all_indices = std::views::iota(first_operation_index, last_operation_index);
   ReplayOperations(emulated_graphics_handler, m_native_efb_framebuffer_manager, view, uniform_state,
-                   all_indices, false);
+                   all_indices, false, "native_efb", m_native_scissor_viewport);
+
+  if (DeferredPerf::kTelemetryEnabled && DeferredPerf::kViewportWriteCapture)
+    DeferredPerf::Telemetry::Get().EndViewportWriteCapture();
+
+  // Persist the viewport/scissor this target was left in, for the next replay.
+  UpdateTrackedScissorViewport(view, first_operation_index, last_operation_index,
+                               &m_native_scissor_viewport);
 }
