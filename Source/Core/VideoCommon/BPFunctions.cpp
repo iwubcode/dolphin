@@ -17,6 +17,7 @@
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/EFBInterface.h"
 #include "VideoCommon/FramebufferManager.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/DeferredPerfTelemetry.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VertexShaderManager.h"
 #include "VideoCommon/VideoCommon.h"
@@ -263,6 +264,19 @@ void SetScissorAndViewport(FramebufferManager* frame_buffer_manager, ScissorPos 
   // Lower-left flip.
   if (g_backend_info.bUsesLowerLeftOrigin)
     y = static_cast<float>(g_gfx->GetCurrentFramebuffer()->GetHeight()) - y - height;
+
+  // THROWAWAY telemetry: capture the ground-truth post-scaling viewport + post-conversion
+  // scissor that are about to hit the GPU, along with which fbm produced them and its IR
+  // scale factor. This is the single choke point for every deferred-path viewport write
+  // (main replay, native-EBF replay, and the ScopedRenderState seed application), so a
+  // main-pass draw that ends up at 1x scaling instead of Nx shows up here directly. The
+  // namespace-level flag lets us bail out without constructing the Telemetry singleton in
+  // normal mode or outside a replay pass.
+  if (DeferredPerf::s_vp_capture_active)
+    DeferredPerf::Telemetry::Get().LogSetViewport(
+        frame_buffer_manager, frame_buffer_manager == g_framebuffer_manager.get(),
+        static_cast<u32>(frame_buffer_manager->GetEFBScale()),
+        frame_buffer_manager->EFBToScaledXf(1.0f), x, y, width, height, converted_rc);
 
   g_gfx->SetViewport(x, y, width, height, near_depth, far_depth);
 
