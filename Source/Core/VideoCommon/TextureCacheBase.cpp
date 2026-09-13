@@ -43,6 +43,7 @@
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/EmulatedGraphicsManager.h"
 #include "VideoCommon/FramebufferManager.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/DeferredPerfTelemetry.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModBackend.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModManager.h"
 #include "VideoCommon/IGraphicsHandler.h"
@@ -3158,6 +3159,11 @@ void TextureCacheBase::CopyEFBToCacheEntry(RcTcacheEntry& entry, bool is_depth_c
       is_depth_copy ? g_framebuffer_manager->ResolveEFBDepthTexture(framebuffer_rect) :
                       g_framebuffer_manager->ResolveEFBColorTexture(framebuffer_rect);
 
+  if (DeferredPerf::kTelemetryEnabled && DeferredPerf::kCopyStreamEnabled)
+    DeferredPerf::Telemetry::Get().LogCopyPass(
+        "efb_to_vram", g_framebuffer_manager.get(), true, g_framebuffer_manager->GetEFBWidth(),
+        g_framebuffer_manager->GetEFBHeight(), framebuffer_rect, entry->framebuffer->GetRect());
+
   g_gfx->BeginUtilityDrawing();
   src_texture->FinishedRendering();
 
@@ -3231,7 +3237,14 @@ void TextureCacheBase::CopyEFB(AbstractStagingTexture* dst,
       scaled_src_rect, frame_buffer_manager->GetEFBFramebuffer());
   AbstractTexture* src_texture =
       params.depth ? frame_buffer_manager->ResolveEFBDepthTexture(framebuffer_rect) :
-                     frame_buffer_manager->ResolveEFBColorTexture(framebuffer_rect);
+                      frame_buffer_manager->ResolveEFBColorTexture(framebuffer_rect);
+
+  if (DeferredPerf::kTelemetryEnabled && DeferredPerf::kCopyStreamEnabled)
+    DeferredPerf::Telemetry::Get().LogCopyPass(
+        "efb_to_ram", frame_buffer_manager, frame_buffer_manager == g_framebuffer_manager.get(),
+        frame_buffer_manager->GetEFBWidth(), frame_buffer_manager->GetEFBHeight(), framebuffer_rect,
+        MathUtil::Rectangle<int>(0, 0, static_cast<int>(bytes_per_row / sizeof(u32)),
+                                 static_cast<int>(num_blocks_y)));
 
   g_gfx->BeginUtilityDrawing();
   src_texture->FinishedRendering();
