@@ -9,6 +9,7 @@
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/BPFunctions.h"
 #include "VideoCommon/FramebufferManager.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/DeferredPerfTelemetry.h"
 #include "VideoCommon/ShaderCache.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoConfig.h"
@@ -35,6 +36,13 @@ void AbstractGfx::EndUtilityDrawing()
 {
   // Reset framebuffer. Pipeline will be reset at next draw.
   g_framebuffer_manager->BindEFBFramebuffer();
+
+  // THROWAWAY telemetry: record that a utility pass just forced the bound target back to the
+  // main EFB. If this happens mid-way through a native-EBF replay batch, subsequent draws keep
+  // their native-scale viewport but land on the main (high-IR) framebuffer -> tiny image in the
+  // top-left corner. No-op unless an op dump is active.
+  if (DeferredPerf::kTelemetryEnabled)
+    DeferredPerf::Telemetry::Get().LogUtilityRebind();
 
   // Reset our viewport and scissor to the last stored value
   SetViewport(m_viewport_and_scissor.viewport_x, m_viewport_and_scissor.viewport_y,
