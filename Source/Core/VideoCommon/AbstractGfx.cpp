@@ -10,6 +10,7 @@
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/BPFunctions.h"
 #include "VideoCommon/FramebufferManager.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/DeferredPerfTelemetry.h"
 #include "VideoCommon/ShaderCache.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoConfig.h"
@@ -44,6 +45,14 @@ void AbstractGfx::EndUtilityDrawing()
   // this function always did.
   SetFramebuffer(m_utility_saved_framebuffer ? m_utility_saved_framebuffer :
                                                g_framebuffer_manager->GetEFBFramebuffer());
+
+  // THROWAWAY telemetry: record whether a utility pass just restored a bound target that
+  // differs from the main EFB, i.e. it was fired inside a native-EBF replay batch. No-op
+  // unless an op dump is active.
+  if (DeferredPerf::kTelemetryEnabled)
+    DeferredPerf::Telemetry::Get().LogUtilityRebind(m_utility_saved_framebuffer != nullptr &&
+                                                    m_utility_saved_framebuffer !=
+                                                        g_framebuffer_manager->GetEFBFramebuffer());
 
   // Reset our viewport and scissor to the last stored value
   SetViewport(m_viewport_and_scissor.viewport_x, m_viewport_and_scissor.viewport_y,
