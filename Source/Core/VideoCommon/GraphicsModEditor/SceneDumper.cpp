@@ -21,6 +21,7 @@
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModBackend.h"
 #include "VideoCommon/OpcodeDecoding.h"
+#include "VideoCommon/TextureCacheBase.h"
 #include "VideoCommon/TextureUtils.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoEvents.h"
@@ -227,7 +228,7 @@ void SceneDumper::AddDataToRecording(GraphicsModSystem::DrawCallID draw_call_id,
     std::string texture_material_name = "";
     for (const auto& texture : draw_data.textures)
     {
-      texture_material_name += texture.hash_name;
+      texture_material_name += texture.entry->texture_info_name;
     }
     if (const auto iter = m_materialhash_to_material_id.find(texture_material_name);
         iter != m_materialhash_to_material_id.end())
@@ -251,28 +252,30 @@ void SceneDumper::AddDataToRecording(GraphicsModSystem::DrawCallID draw_call_id,
           break;
         }
 
-        if (const auto texture_iter = m_texturehash_to_texture_id.find(texture.hash_name);
+        const auto hash_name = texture.entry->texture_info_name;
+        if (const auto texture_iter = m_texturehash_to_texture_id.find(hash_name);
             texture_iter != m_texturehash_to_texture_id.end())
         {
           material.pbrMetallicRoughness.baseColorTexture.index = texture_iter->second;
         }
-        else
+        else if (texture.entry && texture.entry->texture)
         {
-          VideoCommon::TextureUtils::DumpTexture(*texture.texture_data,
-                                                 std::string{texture.hash_name}, 0, false);
+          // entry->texture may be null if the GPU texture was released back to the pool.
+          VideoCommon::TextureUtils::DumpTexture(*texture.entry->texture, std::string{hash_name}, 0,
+                                                 false);
 
           tinygltf::Texture tinygltf_texture;
           tinygltf_texture.source = static_cast<int>(m_impl->m_model.images.size());
 
           tinygltf::Image image;
-          image.uri = fmt::format("{}.png", texture.hash_name);
+          image.uri = fmt::format("{}.png", hash_name);
           m_impl->m_model.images.push_back(image);
 
           material.pbrMetallicRoughness.baseColorTexture.index =
               static_cast<int>(m_impl->m_model.textures.size());
           m_impl->m_model.textures.push_back(tinygltf_texture);
 
-          m_texturehash_to_texture_id[std::string{texture.hash_name}] =
+          m_texturehash_to_texture_id[std::string{hash_name}] =
               material.pbrMetallicRoughness.baseColorTexture.index;
         }
       }
