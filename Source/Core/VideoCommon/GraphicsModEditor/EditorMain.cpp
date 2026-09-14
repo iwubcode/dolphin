@@ -394,15 +394,15 @@ void EditorMain::DrawMenu()
           {
             picojson::object texture_obj;
             texture_obj.emplace("hash", texture.hash_name);
-            if (texture.texture_type == GraphicsModSystem::TextureType::Normal)
+            if (texture.texture_type == TextureType::Normal)
             {
               texture_obj.emplace("type", "Normal");
             }
-            else if (texture.texture_type == GraphicsModSystem::TextureType::EFB)
+            else if (texture.texture_type == TextureType::EFB)
             {
               texture_obj.emplace("type", "EFB");
             }
-            else if (texture.texture_type == GraphicsModSystem::TextureType::XFB)
+            else if (texture.texture_type == TextureType::XFB)
             {
               texture_obj.emplace("type", "XFB");
             }
