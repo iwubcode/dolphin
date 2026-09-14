@@ -133,7 +133,7 @@ void CustomMeshAction::DrawImGui()
       ImGui::TableNextColumn();
       if (GraphicsModEditor::Controls::AssetDisplay("MeshValue", editor.GetEditorState(),
                                                     &m_serializable_data.asset_id,
-                                                    GraphicsModEditor::Mesh))
+                                                    GraphicsModEditor::AssetDataType::Mesh))
       {
         GraphicsModEditor::GetEditorEvents().asset_reload_event.Trigger(
             m_serializable_data.asset_id);
