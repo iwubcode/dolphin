@@ -54,17 +54,8 @@ RcTcacheEntry GraphicsModGraphicsHandler::OnFramebufferCopy(
   if (!render_target)
     return nullptr;
 
-  GraphicsModSystem::TextureView texture;
-  texture.hash_name = render_target->texture_info_name;
-  texture.texture_data = render_target->texture.get();
-  if (!resolved_data.is_xfb)
-  {
-    texture.texture_type = GraphicsModSystem::TextureType::EFB;
-  }
-  else
-  {
-    texture.texture_type = GraphicsModSystem::TextureType::XFB;
-  }
+  GraphicsModSystem::TextureRef texture;
+  texture.entry = render_target;
 
   mod_manager.GetBackend().OnTextureCreate(texture);
 
