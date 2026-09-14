@@ -41,10 +41,10 @@ bool DoesDrawCallMatchFilter(const DrawCallFilterContext& context, const EditorS
   u8 efb_count = 0;
   for (const auto& texture : runtime_iter->second.draw_data.textures)
   {
-    if (texture.texture_type == GraphicsModSystem::TextureType::Normal)
+    if (texture.texture_type == TextureType::Normal)
       texture_count++;
 
-    if (texture.texture_type == GraphicsModSystem::TextureType::EFB)
+    if (texture.texture_type == TextureType::EFB)
       efb_count++;
   }
 
