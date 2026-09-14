@@ -10,8 +10,8 @@
 #include "Common/CommonTypes.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/CameraManager.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/FBInfo.h"
-#include "VideoCommon/GraphicsModSystem/Runtime/FrameData.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModActionData.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/XFBCopyData.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/SkeletonManager.h"
 #include "VideoCommon/GraphicsModSystem/Types.h"
 #include "VideoCommon/IGraphicsHandler.h"
@@ -29,9 +29,11 @@ public:
   virtual ~GraphicsModBackend() = default;
 
   virtual void OnDraw(const DrawDataView& draw_started, IMeshRenderer* mesh_renderer) = 0;
-  virtual void OnTextureUnload(TextureType texture_type, std::string_view texture_hash) = 0;
-  virtual void OnTextureLoad(const TextureView& texture) = 0;
-  virtual void OnTextureCreate(const TextureView& texture) = 0;
+  // The entry is valid for the duration of this callback only; it may be destroyed immediately
+  // after.
+  virtual void OnTextureUnload(const TCacheEntry* entry) = 0;
+  virtual void OnTextureLoad(const TextureRef& texture) = 0;
+  virtual void OnTextureCreate(const TextureRef& texture) = 0;
   virtual void OnLight() = 0;
   virtual void OnFramePresented(const PresentInfo& present_info);
 
@@ -43,7 +45,7 @@ public:
   void ClearAdditionalCameras(const MathUtil::Rectangle<int>& rc, bool color_enable,
                               bool alpha_enable, bool z_enable, u32 color, u32 z);
 
-  XFBFrame* GetFrameData();
+  XFBCopyData* GetCopyData();
 
   // Legacy behavior
   virtual void OnEFBStarted(const FBInfo& info, GraphicsModActionData::PreEFB* efb) = 0;
@@ -65,7 +67,7 @@ protected:
   ShaderHostConfig m_shader_host_config;
 
   VideoCommon::CameraManager m_camera_manager;
-  XFBFrame m_xfb_frame;
+  XFBCopyData m_xfb_copy_data;
   VideoCommon::SkeletonManager m_skeleton_manager;
 
 private:
