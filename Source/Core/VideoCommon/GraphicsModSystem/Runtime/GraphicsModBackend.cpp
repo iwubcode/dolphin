@@ -11,13 +11,14 @@
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModAction.h"
 #include "VideoCommon/Resources/CustomResourceManager.h"
 #include "VideoCommon/ShaderGenCommon.h"
+#include "VideoCommon/TextureCacheBase.h"
 #include "VideoCommon/VertexLoaderManager.h"
 
 namespace GraphicsModSystem::Runtime
 {
-void GraphicsModBackend::OnTextureCreate(const TextureView& texture)
+void GraphicsModBackend::OnTextureCreate(const TextureRef& texture)
 {
-  if (texture.texture_type == TextureType::XFB)
+  if (texture.entry && texture.entry->is_xfb_copy)
   {
     auto& system = Core::System::GetInstance();
     auto& custom_resource_manager = system.GetCustomResourceManager();

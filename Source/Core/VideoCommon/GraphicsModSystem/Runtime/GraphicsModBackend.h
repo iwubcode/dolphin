@@ -29,9 +29,11 @@ public:
   virtual ~GraphicsModBackend() = default;
 
   virtual void OnDraw(const DrawDataView& draw_started, IMeshRenderer* mesh_renderer) = 0;
-  virtual void OnTextureUnload(TextureType texture_type, std::string_view texture_hash) = 0;
-  virtual void OnTextureLoad(const TextureView& texture) = 0;
-  virtual void OnTextureCreate(const TextureView& texture) = 0;
+  // The entry is valid for the duration of this callback only; it may be destroyed immediately
+  // after.
+  virtual void OnTextureUnload(const TCacheEntry* entry) = 0;
+  virtual void OnTextureLoad(const TextureRef& texture) = 0;
+  virtual void OnTextureCreate(const TextureRef& texture) = 0;
   virtual void OnLight() = 0;
   virtual void OnFramePresented(const PresentInfo& present_info);
 
