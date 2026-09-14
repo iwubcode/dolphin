@@ -405,7 +405,7 @@ bool EditorAssetSource::LoadAssetFromFile(const std::filesystem::path& asset_pat
 
     add = true;
     asset->m_data = std::move(texture_data);
-    asset->m_data_type = Texture;
+    asset->m_data_type = AssetDataType::Texture;
     asset->m_asset_map["texture"] = asset_path;
   }
   else if (ext == ".rastershader")
@@ -439,7 +439,7 @@ bool EditorAssetSource::LoadAssetFromFile(const std::filesystem::path& asset_pat
           VideoCommon::RasterSurfaceShaderData::FromJson(uuid, *json, shader_data.get()))
       {
         asset->m_data = std::move(shader_data);
-        asset->m_data_type = Shader;
+        asset->m_data_type = AssetDataType::Shader;
         asset->m_asset_map["metadata"] = asset_path;
         add = true;
       }
@@ -462,7 +462,7 @@ bool EditorAssetSource::LoadAssetFromFile(const std::filesystem::path& asset_pat
         VideoCommon::MeshData::FromJson(uuid, *json, mesh_data.get());
         add = true;
         asset->m_data = std::move(mesh_data);
-        asset->m_data_type = Mesh;
+        asset->m_data_type = AssetDataType::Mesh;
         asset->m_asset_map["mesh"] = asset_path;
       }
       asset->m_asset_map["metadata"] = result;
@@ -477,7 +477,7 @@ bool EditorAssetSource::LoadAssetFromFile(const std::filesystem::path& asset_pat
       {
         add = true;
         asset->m_data = std::move(material_data);
-        asset->m_data_type = Material;
+        asset->m_data_type = AssetDataType::Material;
         asset->m_asset_map["metadata"] = asset_path;
       }
     }
@@ -491,7 +491,7 @@ bool EditorAssetSource::LoadAssetFromFile(const std::filesystem::path& asset_pat
       {
         add = true;
         asset->m_data = std::move(render_target_data);
-        asset->m_data_type = RenderTarget;
+        asset->m_data_type = AssetDataType::RenderTarget;
         asset->m_asset_map["metadata"] = asset_path;
       }
     }
