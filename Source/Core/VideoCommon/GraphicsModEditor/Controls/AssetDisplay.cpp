@@ -23,17 +23,17 @@ std::string_view AssetDragDropTypeFromType(AssetDataType asset_type)
 {
   switch (asset_type)
   {
-  case Material:
+  case AssetDataType::Material:
     return "MaterialAsset";
-  case PixelShader:
+  case AssetDataType::PixelShader:
     return "PixelShaderAsset";
-  case Shader:
+  case AssetDataType::Shader:
     return "ShaderAsset";
-  case Texture:
+  case AssetDataType::Texture:
     return "TextureAsset";
-  case Mesh:
+  case AssetDataType::Mesh:
     return "MeshAsset";
-  case RenderTarget:
+  case AssetDataType::RenderTarget:
     return "RenderTargetAsset";
   }
 
@@ -44,42 +44,42 @@ AbstractTexture* GenericImageIconFromType(AssetDataType asset_type, const Editor
 {
   switch (asset_type)
   {
-  case Material:
+  case AssetDataType::Material:
     if (const auto it = state.m_editor_data.m_name_to_texture.find("file");
         it != state.m_editor_data.m_name_to_texture.end())
     {
       return it->second.get();
     }
     break;
-  case PixelShader:
+  case AssetDataType::PixelShader:
     if (const auto it = state.m_editor_data.m_name_to_texture.find("code");
         it != state.m_editor_data.m_name_to_texture.end())
     {
       return it->second.get();
     }
     break;
-  case Shader:
+  case AssetDataType::Shader:
     if (const auto it = state.m_editor_data.m_name_to_texture.find("code");
         it != state.m_editor_data.m_name_to_texture.end())
     {
       return it->second.get();
     }
     break;
-  case Texture:
+  case AssetDataType::Texture:
     if (const auto it = state.m_editor_data.m_name_to_texture.find("image");
         it != state.m_editor_data.m_name_to_texture.end())
     {
       return it->second.get();
     }
     break;
-  case Mesh:
+  case AssetDataType::Mesh:
     if (const auto it = state.m_editor_data.m_name_to_texture.find("file");
         it != state.m_editor_data.m_name_to_texture.end())
     {
       return it->second.get();
     }
     break;
-  case RenderTarget:
+  case AssetDataType::RenderTarget:
     if (const auto it = state.m_editor_data.m_name_to_texture.find("image");
         it != state.m_editor_data.m_name_to_texture.end())
     {
