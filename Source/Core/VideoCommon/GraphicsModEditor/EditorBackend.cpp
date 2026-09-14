@@ -45,8 +45,8 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
   for (std::size_t i = 0; i < draw_data.textures.size(); i++)
   {
     const auto& texture = draw_data.textures[i];
-    if (const auto iter =
-            m_state.m_user_data.m_texture_cache_id_to_user_data.find(texture.hash_name);
+    if (const auto iter = m_state.m_user_data.m_texture_cache_id_to_user_data.find(
+            texture.entry->texture_info_name);
         iter != m_state.m_user_data.m_texture_cache_id_to_user_data.end())
     {
       tags_per_texture_hash.push_back(iter->second.tag_flags);
@@ -107,13 +107,13 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
       iter->second.draw_data.is_gpu_skinning =
           IsDrawGPUSkinned(draw_data.vertex_format, draw_data.uid->rasterization_state.primitive);
 
-      Common::SmallVector<GraphicsModSystem::Texture, 8> textures;
-      for (const auto& texture_view : draw_data.textures)
+      Common::SmallVector<Texture, 8> textures;
+      for (const auto& texture_ref : draw_data.textures)
       {
-        GraphicsModSystem::Texture texture;
-        texture.hash_name = std::string{texture_view.hash_name};
-        texture.texture_type = texture_view.texture_type;
-        texture.unit = texture_view.unit;
+        Texture texture;
+        texture.hash_name = std::string{texture_ref.entry->texture_info_name};
+        texture.texture_type = GetTextureType(texture_ref.entry.get());
+        texture.unit = texture_ref.unit;
         textures.push_back(std::move(texture));
       }
       iter->second.draw_data.textures = textures;
@@ -136,13 +136,13 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
       data.draw_data.rasterization_state = draw_data.uid->rasterization_state;
       data.draw_data.xfb_counter = m_xfb_counter;
 
-      Common::SmallVector<GraphicsModSystem::Texture, 8> textures;
-      for (const auto& texture_view : draw_data.textures)
+      Common::SmallVector<Texture, 8> textures;
+      for (const auto& texture_ref : draw_data.textures)
       {
-        GraphicsModSystem::Texture texture;
-        texture.hash_name = std::string{texture_view.hash_name};
-        texture.texture_type = texture_view.texture_type;
-        texture.unit = texture_view.unit;
+        Texture texture;
+        texture.hash_name = std::string{texture_ref.entry->texture_info_name};
+        texture.texture_type = GetTextureType(texture_ref.entry.get());
+        texture.unit = texture_ref.unit;
         textures.push_back(std::move(texture));
       }
       data.draw_data.textures = textures;
@@ -394,51 +394,54 @@ void EditorBackend::OnDraw(const GraphicsModSystem::DrawDataView& draw_data,
   }
 }
 
-void EditorBackend::OnTextureLoad(const GraphicsModSystem::TextureView& texture)
+void EditorBackend::OnTextureLoad(const GraphicsModSystem::TextureRef& texture)
 {
-  std::string texture_cache_id{texture.hash_name};
-  auto iter = m_state.m_runtime_data.m_texture_cache_id_to_data.lower_bound(texture.hash_name);
-  if (iter == m_state.m_runtime_data.m_texture_cache_id_to_data.end() ||
-      iter->first != texture.hash_name)
+  const auto hash_name = texture.entry->texture_info_name;
+  std::string texture_cache_id{hash_name};
+  auto iter = m_state.m_runtime_data.m_texture_cache_id_to_data.lower_bound(hash_name);
+  if (iter == m_state.m_runtime_data.m_texture_cache_id_to_data.end() || iter->first != hash_name)
   {
     m_state.m_runtime_data.m_current_xfb.m_texture_cache_ids.insert(texture_cache_id);
 
     GraphicsModEditor::TextureCacheData data;
     data.id = std::move(texture_cache_id);
     data.create_time = std::chrono::steady_clock::now();
-    iter = m_state.m_runtime_data.m_texture_cache_id_to_data.emplace_hint(iter, texture.hash_name,
+    iter = m_state.m_runtime_data.m_texture_cache_id_to_data.emplace_hint(iter, hash_name,
                                                                           std::move(data));
   }
   else
   {
     m_state.m_runtime_data.m_current_xfb.m_texture_cache_ids.insert(std::move(texture_cache_id));
   }
-  iter->second.texture = texture;
-  iter->second.active = true;
+  iter->second.entry = texture.entry;
+  iter->second.unit = texture.unit;
   iter->second.last_load_time = std::chrono::steady_clock::now();
 }
 
-void EditorBackend::OnTextureUnload(GraphicsModSystem::TextureType, std::string_view texture_hash)
+void EditorBackend::OnTextureUnload(const TCacheEntry* entry)
 {
+  const auto texture_hash = entry->texture_info_name;
   if (auto iter = m_state.m_runtime_data.m_texture_cache_id_to_data.find(texture_hash);
       iter != m_state.m_runtime_data.m_texture_cache_id_to_data.end())
   {
-    iter->second.active = false;
+    // Clear the stored entry; the panel will show the unloaded state until it is loaded again.
+    iter->second.entry.reset();
   }
 }
 
-void EditorBackend::OnTextureCreate(const GraphicsModSystem::TextureView& texture)
+void EditorBackend::OnTextureCreate(const GraphicsModSystem::TextureRef& texture)
 {
   GraphicsModSystem::Runtime::GraphicsModBackend::OnTextureCreate(texture);
 
-  if (texture.texture_type == GraphicsModSystem::TextureType::XFB)
+  const auto hash_name = texture.entry->texture_info_name;
+  if (GetTextureType(texture.entry.get()) == TextureType::XFB)
   {
     // Skip XFBs that have no draw calls
     if (m_state.m_runtime_data.m_current_xfb.m_draw_call_ids.empty())
       return;
 
     // TODO: use string_view directly in C++26 (or use a different container)
-    const std::string xfb_hash_name{texture.hash_name};
+    const std::string xfb_hash_name{hash_name};
     m_state.m_runtime_data.m_xfb_to_data[xfb_hash_name] =
         std::move(m_state.m_runtime_data.m_current_xfb);
     m_state.m_runtime_data.m_current_xfb = {};
@@ -449,10 +452,11 @@ void EditorBackend::OnTextureCreate(const GraphicsModSystem::TextureView& textur
     return;
   }
 
-  std::string texture_cache_id{texture.hash_name};
+  std::string texture_cache_id{hash_name};
   GraphicsModEditor::TextureCacheData data;
   data.id = texture_cache_id;
-  data.texture = texture;
+  data.entry = texture.entry;
+  data.unit = texture.unit;
   data.create_time = std::chrono::steady_clock::now();
   m_state.m_runtime_data.m_texture_cache_id_to_data.insert_or_assign(std::move(texture_cache_id),
                                                                      std::move(data));

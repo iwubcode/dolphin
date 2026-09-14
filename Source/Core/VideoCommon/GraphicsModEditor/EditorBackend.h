@@ -26,10 +26,9 @@ public:
   explicit EditorBackend(EditorState&);
   void OnDraw(const GraphicsModSystem::DrawDataView& draw_started,
               IMeshRenderer* mesh_renderer) override;
-  void OnTextureLoad(const GraphicsModSystem::TextureView& texture) override;
-  void OnTextureUnload(GraphicsModSystem::TextureType texture_type,
-                       std::string_view texture_hash) override;
-  void OnTextureCreate(const GraphicsModSystem::TextureView& texture) override;
+  void OnTextureLoad(const GraphicsModSystem::TextureRef& texture) override;
+  void OnTextureUnload(const TCacheEntry* entry) override;
+  void OnTextureCreate(const GraphicsModSystem::TextureRef& texture) override;
   void OnLight() override;
   void OnFramePresented(const PresentInfo& present_info) override;
 
