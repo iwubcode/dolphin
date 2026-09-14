@@ -427,8 +427,8 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsModSystem::DrawCallID& se
         auto& texture = data.draw_data.textures[index];
         const auto& texture_info =
             m_state.m_runtime_data.m_texture_cache_id_to_data[texture.hash_name];
-        const auto& texture_view = texture_info.texture;
-        if (texture_view.texture_data)
+
+        if (texture_info.entry && texture_info.entry->texture)
         {
           auto& sampler = data.draw_data.samplers[texture.unit];
 
@@ -488,42 +488,41 @@ void PropertiesPanel::DrawCallIDSelected(const GraphicsModSystem::DrawCallID& se
           ImGui::Text("Texture (%i)", texture.unit);
           ImGui::TableNextColumn();
 
-          if (texture_info.active)
+          const auto& tex = *texture_info.entry->texture;
+          const float column_width = ImGui::GetContentRegionAvail().x;
+          float image_width = tex.GetWidth();
+          float image_height = tex.GetHeight();
+          const float image_aspect_ratio = image_width / image_height;
+
+          const float final_width = std::min(image_width * 4, column_width);
+          image_width = final_width;
+          image_height = final_width / image_aspect_ratio;
+
+          ImGui::ImageButton(texture.hash_name.data(), tex, ImVec2{image_width, image_height});
+          if (ImGui::BeginPopupContextItem())
           {
-            const float column_width = ImGui::GetContentRegionAvail().x;
-            float image_width = texture_view.texture_data->GetWidth();
-            float image_height = texture_view.texture_data->GetHeight();
-            const float image_aspect_ratio = image_width / image_height;
-
-            const float final_width = std::min(image_width * 4, column_width);
-            image_width = final_width;
-            image_height = final_width / image_aspect_ratio;
-
-            ImGui::ImageButton(texture_view.hash_name.data(), *texture_view.texture_data,
-                               ImVec2{image_width, image_height});
-            if (ImGui::BeginPopupContextItem())
+            if (ImGui::Selectable("Dump"))
             {
-              if (ImGui::Selectable("Dump"))
-              {
-                VideoCommon::TextureUtils::DumpTexture(*texture_view.texture_data,
-                                                       texture.hash_name, 0, false);
-              }
-              if (ImGui::Selectable("Copy hash"))
-              {
-                ImGui::SetClipboardText(texture_view.hash_name.data());
-              }
-              ImGui::EndPopup();
+              VideoCommon::TextureUtils::DumpTexture(tex, texture.hash_name, 0, false);
             }
-            ImGui::Text("%s %dx%d", texture.hash_name.data(), texture_view.texture_data->GetWidth(),
-                        texture_view.texture_data->GetHeight());
+            if (ImGui::Selectable("Copy hash"))
+            {
+              ImGui::SetClipboardText(texture.hash_name.data());
+            }
+            ImGui::EndPopup();
           }
-          else
-          {
-            ImGui::Text(
-                "<Texture %s unloaded, last created/updated: %lld/%lld>", texture.hash_name.data(),
-                static_cast<long long int>(texture_info.create_time.time_since_epoch().count()),
-                static_cast<long long int>(texture_info.last_load_time.time_since_epoch().count()));
-          }
+          ImGui::Text("%s %dx%d", texture.hash_name.data(), tex.GetWidth(), tex.GetHeight());
+        }
+        else
+        {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::Text("Texture (%i)", texture.unit);
+          ImGui::TableNextColumn();
+          ImGui::Text(
+              "<Texture %s unloaded, last created/updated: %lld/%lld>", texture.hash_name.data(),
+              static_cast<long long int>(texture_info.create_time.time_since_epoch().count()),
+              static_cast<long long int>(texture_info.last_load_time.time_since_epoch().count()));
         }
       }
       ImGui::EndTable();
@@ -557,11 +556,12 @@ void PropertiesPanel::TextureCacheIDSelected(
     ImGui::TableNextColumn();
     ImGui::Text("%lld", static_cast<long long int>(data.create_time.time_since_epoch().count()));
 
-    if (data.texture.texture_data && data.active)
+    if (data.entry && data.entry->texture)
     {
+      const auto& tex = *data.entry->texture;
       const float column_width = ImGui::GetContentRegionAvail().x;
-      float image_width = data.texture.texture_data->GetWidth();
-      float image_height = data.texture.texture_data->GetHeight();
+      float image_width = tex.GetWidth();
+      float image_height = tex.GetHeight();
       const float image_aspect_ratio = image_width / image_height;
 
       const float final_width = std::min(image_width * 4, column_width);
@@ -573,35 +573,32 @@ void PropertiesPanel::TextureCacheIDSelected(
       ImGui::Text("Texture Preview");
       ImGui::TableNextColumn();
 
-      ImGui::ImageButton(data.texture.hash_name.data(), *data.texture.texture_data,
-                         ImVec2{image_width, image_height});
+      ImGui::ImageButton(data.id.data(), tex, ImVec2{image_width, image_height});
       if (ImGui::BeginPopupContextItem())
       {
         if (ImGui::Selectable("Dump"))
         {
-          VideoCommon::TextureUtils::DumpTexture(*data.texture.texture_data,
-                                                 std::string{data.texture.hash_name}, 0, false);
+          VideoCommon::TextureUtils::DumpTexture(tex, data.id, 0, false);
         }
         if (ImGui::Selectable("Copy hash"))
         {
-          ImGui::SetClipboardText(data.texture.hash_name.data());
+          ImGui::SetClipboardText(data.id.data());
         }
         ImGui::EndPopup();
       }
-      ImGui::Text("%s %dx%d", data.texture.hash_name.data(), data.texture.texture_data->GetWidth(),
-                  data.texture.texture_data->GetHeight());
+      ImGui::Text("%s %dx%d", data.id.c_str(), tex.GetWidth(), tex.GetHeight());
 
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::Text("Mip Count");
       ImGui::TableNextColumn();
-      ImGui::Text("%d", data.texture.texture_data->GetLevels());
+      ImGui::Text("%d", tex.GetLevels());
 
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::Text("Layer Count");
       ImGui::TableNextColumn();
-      ImGui::Text("%d", data.texture.texture_data->GetLayers());
+      ImGui::Text("%d", tex.GetLayers());
     }
 
     ImGui::EndTable();
