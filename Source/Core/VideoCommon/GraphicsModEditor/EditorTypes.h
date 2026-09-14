@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <map>
@@ -18,7 +19,6 @@
 #include "Common/CommonTypes.h"
 #include "Common/Matrix.h"
 
-#include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/Assets/CustomAssetLibrary.h"
 #include "VideoCommon/Assets/CustomTextureData.h"
 #include "VideoCommon/Assets/DirectFilesystemAssetLibrary.h"
@@ -28,10 +28,62 @@
 #include "VideoCommon/Assets/TextureAsset.h"
 #include "VideoCommon/GraphicsModSystem/Runtime/GraphicsModAction.h"
 #include "VideoCommon/GraphicsModSystem/Types.h"
+#include "VideoCommon/TextureCacheBase.h"
 #include "VideoCommon/XFMemory.h"
 
 namespace GraphicsModEditor
 {
+enum class TextureType
+{
+  Normal,
+  EFB,
+  XFB
+};
+
+// Derives the texture type from immutable TCacheEntry flags. Only usable while the entry is alive.
+inline TextureType GetTextureType(const TCacheEntry* entry)
+{
+  if (!entry)
+    return TextureType::Normal;
+  if (entry->is_efb_copy)
+    return TextureType::EFB;
+  if (entry->is_xfb_copy)
+    return TextureType::XFB;
+  return TextureType::Normal;
+}
+
+// Persistent per-texture record for a draw call. Unlike the transient
+// GraphicsModSystem::TextureRef, this outlives the TCacheEntry (the editor's draw-call map is never
+// pruned), so it stores only entry-independent data: the hash name and a snapshot of the texture
+// type taken while the entry was still alive (it cannot be re-derived once the entry has been
+// invalidated and pooled).
+struct Texture
+{
+  TextureType texture_type = TextureType::Normal;
+  std::string hash_name;
+  u8 unit = 0;
+};
+
+// Persistent draw-call data, retained for the whole editor session.
+struct DrawData
+{
+  Common::SmallVector<Texture, 8> textures;
+  std::array<SamplerState, 8> samplers;
+
+  std::size_t vertex_count = 0;
+  std::size_t index_count = 0;
+
+  bool is_gpu_skinning = false;
+  u32 pos_normal_index = 0;
+
+  ProjectionType projection_type;
+  Projection::Raw projection_mat;
+  RasterizationState rasterization_state;
+  DepthState depth_state;
+  BlendingState blending_state;
+  u64 xfb_counter = 0;
+};
+
 struct DrawCallData
 {
   GraphicsModSystem::DrawCallID id;
@@ -40,7 +92,7 @@ struct DrawCallData
   std::chrono::steady_clock::time_point create_time;
   std::chrono::steady_clock::time_point last_update_time;
 
-  GraphicsModSystem::DrawData draw_data;
+  DrawData draw_data;
 };
 
 struct TextureCacheData
@@ -48,9 +100,11 @@ struct TextureCacheData
   GraphicsModSystem::TextureCacheID id;
   std::chrono::steady_clock::time_point create_time;
   std::chrono::steady_clock::time_point last_load_time;
-  bool active = false;
 
-  GraphicsModSystem::TextureView texture;
+  // The shared pointer keeps the TCacheEntry alive, but entry->texture may be null once the GPU
+  // texture has been released back to the pool. "Is it viewable" == entry && entry->texture.
+  RcTcacheEntry entry;
+  u8 unit = 0;
 };
 
 struct LightData
@@ -105,7 +159,7 @@ using EditorAssetData = std::variant<
     std::unique_ptr<VideoCommon::MaterialData>, std::unique_ptr<VideoCommon::TextureAndSamplerData>,
     std::unique_ptr<VideoCommon::MeshData>, std::unique_ptr<VideoCommon::RasterSurfaceShaderData>,
     std::unique_ptr<VideoCommon::RenderTargetData>>;
-enum AssetDataType
+enum class AssetDataType
 {
   Material,
   Mesh,
