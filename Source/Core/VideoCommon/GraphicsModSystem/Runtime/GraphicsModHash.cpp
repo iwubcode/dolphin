@@ -60,11 +60,9 @@ HashOutput GetDrawDataHash(const Config::HashPolicy& hash_policy, const DrawData
 
   if (hash_policy.first_texture_only)
   {
-    auto& first_texture = draw_data.textures[0];
-    XXH3_64bits_update(&draw_hash_state, first_texture.hash_name.data(),
-                       first_texture.hash_name.size());
-    XXH3_64bits_update(&material_hash_state, first_texture.hash_name.data(),
-                       first_texture.hash_name.size());
+    const auto hash_name = draw_data.textures[0].entry->texture_info_name;
+    XXH3_64bits_update(&draw_hash_state, hash_name.data(), hash_name.size());
+    XXH3_64bits_update(&material_hash_state, hash_name.data(), hash_name.size());
   }
   else
   {
@@ -75,7 +73,7 @@ HashOutput GetDrawDataHash(const Config::HashPolicy& hash_policy, const DrawData
       const auto& texture_tags = tags_per_texture_hash[i];
       if (texture_tags[GraphicsModSystem::TextureTag::Ignore])
         continue;
-      texture_hashes.insert(texture.hash_name);
+      texture_hashes.insert(texture.entry->texture_info_name);
     }
 
     for (const auto& texture_hash : texture_hashes)
