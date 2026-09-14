@@ -551,15 +551,16 @@ void ActiveTargetsPanel::TexturesPanel(
       const auto& runtime_data =
           m_state.m_runtime_data.m_texture_cache_id_to_data[texture_cache_id];
 
-      if (!runtime_data.active)
+      // entry->texture may be null if the GPU texture was released back to the pool.
+      if (!runtime_data.entry || !runtime_data.entry->texture)
         continue;
 
       ImGui::BeginGroup();
 
+      const auto& tex = *runtime_data.entry->texture;
       const float column_width = ImGui::GetContentRegionAvail().x;
-      const auto texture_view = runtime_data.texture;
-      float image_width = texture_view.texture_data->GetWidth();
-      float image_height = texture_view.texture_data->GetHeight();
+      float image_width = tex.GetWidth();
+      float image_height = tex.GetHeight();
       const float image_aspect_ratio = image_width / image_height;
 
       const int column_count = 3;
@@ -567,8 +568,7 @@ void ActiveTargetsPanel::TexturesPanel(
       image_width = final_width;
       image_height = final_width / image_aspect_ratio;
 
-      if (ImGui::ImageButton(texture_cache_id.c_str(), *runtime_data.texture.texture_data,
-                             ImVec2{image_width, image_height}))
+      if (ImGui::ImageButton(texture_cache_id.c_str(), tex, ImVec2{image_width, image_height}))
       {
         if (!ImGui::GetIO().KeyCtrl)
           m_selected_nodes.clear();
