@@ -586,7 +586,7 @@ void VertexManagerBase::Flush()
   const auto used_textures = UsedTextures();
 
   CalculateNormals(VertexLoaderManager::GetCurrentVertexFormat());
-  Common::SmallVector<GraphicsModSystem::TextureView, 8> textures;
+  Common::SmallVector<GraphicsModSystem::TextureRef, 8> textures;
   std::array<SamplerState, 8> samplers;
   if (!m_cull_all)
   {
@@ -601,22 +601,9 @@ void VertexManagerBase::Flush()
 
       if (g_ActiveConfig.bGraphicMods)
       {
-        GraphicsModSystem::TextureView texture;
-        texture.hash_name = cache_entry->texture_info_name;
-        texture.texture_data = cache_entry->texture.get();
-        if (cache_entry->is_efb_copy)
-        {
-          texture.texture_type = GraphicsModSystem::TextureType::EFB;
-        }
-        else if (cache_entry->is_xfb_copy)
-        {
-          texture.texture_type = GraphicsModSystem::TextureType::XFB;
-        }
-        else
-        {
-          texture.texture_type = GraphicsModSystem::TextureType::Normal;
-        }
-        texture.unit = i;
+        GraphicsModSystem::TextureRef texture;
+        texture.entry = cache_entry;
+        texture.unit = static_cast<u8>(i);
         textures.push_back(std::move(texture));
       }
     }
@@ -1216,9 +1203,9 @@ void VertexManagerBase::ProcessEmulatedMesh(
 
   for (std::size_t i = 0; i < draw_data.textures.size(); i++)
   {
-    const auto draw_data_texture = draw_data.textures[i];
+    const auto& draw_data_texture = draw_data.textures[i];
     EmulatedGraphics::Texture texture;
-    texture.ptr = draw_data_texture.texture_data;
+    texture.entry = draw_data_texture.entry;
     texture.index = draw_data_texture.unit;
     texture.sampler = draw_data.samplers[draw_data_texture.unit];
     draw_call_data.textures.push_back(std::move(texture));
@@ -1408,9 +1395,9 @@ void VertexManagerBase::ProcessCustomMeshChunk(
   Common::SmallVector<EmulatedGraphics::Texture, 8> textures;
   for (std::size_t i = 0; i < draw_data.textures.size(); i++)
   {
-    const auto draw_data_texture = draw_data.textures[i];
+    const auto& draw_data_texture = draw_data.textures[i];
     EmulatedGraphics::Texture texture;
-    texture.ptr = draw_data_texture.texture_data;
+    texture.entry = draw_data_texture.entry;
     texture.index = draw_data_texture.unit;
     texture.sampler = draw_data.samplers[draw_data_texture.unit];
     textures.push_back(std::move(texture));
@@ -1469,7 +1456,8 @@ void VertexManagerBase::DrawGraphicsData(FramebufferManager* framebuffer_manager
 
   for (const auto& texture : draw_call_data.textures)
   {
-    g_gfx->SetTexture(texture.index, texture.ptr);
+    // entry->texture may be null if the GPU texture was released back to the pool.
+    g_gfx->SetTexture(texture.index, texture.entry ? texture.entry->texture.get() : nullptr);
     g_gfx->SetSamplerState(texture.index, texture.sampler);
   }
 
