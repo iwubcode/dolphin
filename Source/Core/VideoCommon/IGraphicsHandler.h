@@ -99,7 +99,9 @@ struct PixelFormatChangeData
 
 struct Texture
 {
-  AbstractTexture* ptr;
+  // Keeps the TCacheEntry alive for the duration of the frame. Note that entry->texture may be
+  // null if the GPU texture has been released back to the pool (e.g. pending EFB copies).
+  RcTcacheEntry entry;
   SamplerState sampler;
   u32 index;
 };
