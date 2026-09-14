@@ -90,7 +90,7 @@ void RelativeCameraAction::DrawImGui()
       ImGui::TableNextColumn();
       if (GraphicsModEditor::Controls::AssetDisplay("Color Render target", editor.GetEditorState(),
                                                     &m_camera.color_asset_id,
-                                                    GraphicsModEditor::RenderTarget))
+                                                    GraphicsModEditor::AssetDataType::RenderTarget))
       {
         GraphicsModEditor::GetEditorEvents().asset_reload_event.Trigger(m_camera.color_asset_id);
       }
@@ -105,7 +105,7 @@ void RelativeCameraAction::DrawImGui()
       }
       if (GraphicsModEditor::Controls::AssetDisplay("Depth Render target", editor.GetEditorState(),
                                                     &m_camera.depth_asset_id,
-                                                    GraphicsModEditor::RenderTarget))
+                                                    GraphicsModEditor::AssetDataType::RenderTarget))
       {
         GraphicsModEditor::GetEditorEvents().asset_reload_event.Trigger(m_camera.depth_asset_id);
       }
