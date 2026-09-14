@@ -174,14 +174,15 @@ void GraphicsModRuntimeBackend::OnDraw(const DrawDataView& draw_data, IMeshRende
   mesh_renderer->DrawEmulatedMesh(draw_data);
 }
 
-void GraphicsModRuntimeBackend::OnTextureLoad(const TextureView& texture)
+void GraphicsModRuntimeBackend::OnTextureLoad(const TextureRef& texture)
 {
+  const auto hash_name = texture.entry->texture_info_name;
   for (auto& mod : m_mods)
   {
-    if (const auto iter = mod.m_str_id_to_actions.find(texture.hash_name);
+    if (const auto iter = mod.m_str_id_to_actions.find(hash_name);
         iter != mod.m_str_id_to_actions.end())
     {
-      GraphicsModActionData::TextureLoad load{.texture_name = texture.hash_name};
+      GraphicsModActionData::TextureLoad load{.texture_name = hash_name};
       for (const auto& action : iter->second)
       {
         action->OnTextureLoad(&load);
@@ -191,20 +192,21 @@ void GraphicsModRuntimeBackend::OnTextureLoad(const TextureView& texture)
   }
 }
 
-void GraphicsModRuntimeBackend::OnTextureUnload(TextureType, std::string_view)
+void GraphicsModRuntimeBackend::OnTextureUnload(const TCacheEntry*)
 {
 }
 
-void GraphicsModRuntimeBackend::OnTextureCreate(const TextureView& texture)
+void GraphicsModRuntimeBackend::OnTextureCreate(const TextureRef& texture)
 {
   GraphicsModSystem::Runtime::GraphicsModBackend::OnTextureCreate(texture);
 
+  const auto hash_name = texture.entry->texture_info_name;
   for (auto& mod : m_mods)
   {
-    if (const auto iter = mod.m_str_id_to_actions.find(texture.hash_name);
+    if (const auto iter = mod.m_str_id_to_actions.find(hash_name);
         iter != mod.m_str_id_to_actions.end())
     {
-      GraphicsModActionData::TextureCreate texture_create{.texture_name = texture.hash_name};
+      GraphicsModActionData::TextureCreate texture_create{.texture_name = hash_name};
       for (const auto& action : iter->second)
       {
         action->OnTextureCreate(&texture_create);

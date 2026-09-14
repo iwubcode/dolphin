@@ -24,9 +24,9 @@ class GraphicsModRuntimeBackend final : public GraphicsModBackend
 public:
   explicit GraphicsModRuntimeBackend(const Config::GraphicsModGroup& config_data);
   void OnDraw(const DrawDataView& draw_data, IMeshRenderer* mesh_renderer) override;
-  void OnTextureLoad(const TextureView& texture) override;
-  void OnTextureUnload(TextureType texture_type, std::string_view texture_hash) override;
-  void OnTextureCreate(const TextureView& texture) override;
+  void OnTextureLoad(const TextureRef& texture) override;
+  void OnTextureUnload(const TCacheEntry* entry) override;
+  void OnTextureCreate(const TextureRef& texture) override;
   void OnLight() override;
   void OnFramePresented(const PresentInfo& present_info) override;
 

@@ -13,13 +13,14 @@
 #include "Common/CommonTypes.h"
 #include "Common/Matrix.h"
 #include "Common/SmallVector.h"
-#include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/Assets/CustomAssetLibrary.h"
 #include "VideoCommon/ConstantManager.h"
 #include "VideoCommon/GXPipelineTypes.h"
 #include "VideoCommon/NativeVertexFormat.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/XFMemory.h"
+
+struct TCacheEntry;
 
 namespace GraphicsModSystem
 {
@@ -61,25 +62,12 @@ enum class DrawCallTag : u32
 };
 using DrawCallTags = Common::Flags<DrawCallTag>;
 
-enum class TextureType
+// Transient per-draw reference to a cached texture. The shared pointer keeps the TCacheEntry
+// alive for the duration of the draw, but note that entry->texture may be null if the GPU
+// texture has been released back to the pool (e.g. pending EFB copies).
+struct TextureRef
 {
-  Normal,
-  EFB,
-  XFB
-};
-
-struct TextureView
-{
-  TextureType texture_type = TextureType::Normal;
-  AbstractTexture* texture_data = nullptr;
-  std::string_view hash_name;
-  u8 unit = 0;
-};
-
-struct Texture
-{
-  TextureType texture_type = TextureType::Normal;
-  std::string hash_name;
+  std::shared_ptr<TCacheEntry> entry;
   u8 unit = 0;
 };
 
@@ -98,30 +86,11 @@ struct DrawDataView
   std::span<const float4> projection_transform;
   Viewport viewport_details;
   NativeVertexFormat* vertex_format = nullptr;
-  Common::SmallVector<TextureView, 8> textures;
+  Common::SmallVector<TextureRef, 8> textures;
   std::array<SamplerState, 8> samplers;
 
   ProjectionType projection_type;
   VideoCommon::GXPipelineUid* uid;
-};
-
-struct DrawData
-{
-  Common::SmallVector<Texture, 8> textures;
-  std::array<SamplerState, 8> samplers;
-
-  std::size_t vertex_count = 0;
-  std::size_t index_count = 0;
-
-  bool is_gpu_skinning = false;
-  u32 pos_normal_index = 0;
-
-  ProjectionType projection_type;
-  Projection::Raw projection_mat;
-  RasterizationState rasterization_state;
-  DepthState depth_state;
-  BlendingState blending_state;
-  u64 xfb_counter = 0;
 };
 
 struct Camera
