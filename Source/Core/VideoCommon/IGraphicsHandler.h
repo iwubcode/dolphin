@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <cstring>
+
 #include "Common/CommonTypes.h"
 #include "Common/MathUtil.h"
 #include "Common/SmallVector.h"
@@ -75,6 +77,20 @@ struct ScissorsAndViewportData
   ScissorPos scissor_bottom_right;
   ScissorOffset scissor_offset;
   Viewport viewport;
+
+  // The scissor unions hold BitField members, whose copy assignment is explicitly
+  // deleted (it would copy the full storage instead of one field). That deletion
+  // propagates here, deleting the implicit assignment operators and blocking
+  // std::optional/vector assignment of this snapshot type (e.g. std::erase_if).
+  // Byte-wise assignment is the intended whole-struct semantics. Declaring ONLY the
+  // copy assignment keeps this an aggregate (brace/designated init still work) and
+  // keeps the implicit memberwise copy constructor; move operations fall back here.
+  ScissorsAndViewportData& operator=(const ScissorsAndViewportData& other)
+  {
+    if (this != &other)
+      std::memcpy(this, &other, sizeof(*this));
+    return *this;
+  }
 };
 
 struct PixelEngineData
@@ -99,7 +115,9 @@ struct PixelFormatChangeData
 
 struct Texture
 {
-  AbstractTexture* ptr;
+  // Keeps the TCacheEntry alive for the duration of the frame. Note that entry->texture may be
+  // null if the GPU texture has been released back to the pool (e.g. pending EFB copies).
+  RcTcacheEntry entry;
   SamplerState sampler;
   u32 index;
 };
