@@ -556,6 +556,65 @@ void PropertiesPanel::TextureCacheIDSelected(
     ImGui::TableNextColumn();
     ImGui::Text("%lld", static_cast<long long int>(data.create_time.time_since_epoch().count()));
 
+    // [FB-DBG] Texture cache entry diagnostics: helps identify black EFB/XFB copies.
+    if (data.entry)
+    {
+      const auto& e = *data.entry;
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Type");
+      ImGui::TableNextColumn();
+      switch (GetTextureType(&e))
+      {
+        case TextureType::EFB: ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "EFB copy"); break;
+        case TextureType::XFB: ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "XFB copy"); break;
+        default: ImGui::Text("Normal"); break;
+      }
+
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Memory Addr / Stride");
+      ImGui::TableNextColumn();
+      ImGui::Text("%#010x / %u", e.addr, e.memory_stride);
+
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Frame Count");
+      ImGui::TableNextColumn();
+      // FRAMECOUNT_INVALID means the entry was created but never bound/used by a draw.
+      if (e.frameCount == FRAMECOUNT_INVALID)
+        ImGui::TextColored(ImVec4(1, 0, 0, 1), "INVALID (never used by a draw!)");
+      else
+        ImGui::Text("%d", e.frameCount);
+
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Pending EFB Copy");
+      ImGui::TableNextColumn();
+      if (e.pending_efb_copy)
+        ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "YES (%ux%u, deferred_staging=%d)",
+                           e.pending_efb_copy_width, e.pending_efb_copy_height,
+                           e.deferred_staging ? 1 : 0);
+      else
+        ImGui::Text("no");
+
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("GPU Texture");
+      ImGui::TableNextColumn();
+      if (e.texture)
+        ImGui::Text("%dx%d", e.texture->GetWidth(), e.texture->GetHeight());
+      else
+        ImGui::TextColored(ImVec4(1, 0, 0, 1), "NULL (released to pool - will re-upload from RAM)");
+
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Overlap / Safe Hash");
+      ImGui::TableNextColumn();
+      ImGui::Text("may_overlap=%d force_safe_hash=%d", e.may_have_overlapping_textures ? 1 : 0,
+                  e.should_force_safe_hashing ? 1 : 0);
+    }
+
     if (data.entry && data.entry->texture)
     {
       const auto& tex = *data.entry->texture;
