@@ -382,12 +382,6 @@ public:
 
   void UninitializeMemory(RcTcacheEntry entry);
 
-  RcTcacheEntry CopyRenderTargetToTexture(
-      u32 dstAddr, EFBCopyFormat dstFormat, u32 width, u32 height, u32 dstStride,
-      bool is_depth_copy, const MathUtil::Rectangle<int>& srcRect, bool isIntensity,
-      bool scaleByHalf, float y_scale, float gamma, bool clamp_top, bool clamp_bottom,
-      const CopyFilterCoefficients::Values& filter_coefficients);
-
   void
   CompleteVRAMFramebufferCopy(RcTcacheEntry entry,
                               const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data);
@@ -517,6 +511,8 @@ private:
   RcTcacheEntry SetupCopyEntry(FramebufferManager* frame_buffer_manager,
                                const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data,
                                std::string_view name);
+  void CopyRenderTargetToVRam(RcTcacheEntry& entry, FramebufferManager* frame_buffer_manager,
+                              const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data);
   void CopyRenderTargetToRam(RcTcacheEntry& entry, FramebufferManager* frame_buffer_manager,
                              u8* dst,
                              const EmulatedGraphics::FramebufferCopyResolvedData& resolved_data,
