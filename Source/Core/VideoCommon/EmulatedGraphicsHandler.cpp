@@ -70,8 +70,21 @@ void EmulatedGraphicsHandler::FlushFramebufferCopy(IFramebufferRenderer* rendere
 
 void EmulatedGraphicsHandler::OnFramebufferClear(
     EmulatedGraphics::ClearCopyData clear_data,
-    EmulatedGraphics::ScissorsAndViewportData scissors_and_viewport_data, bool)
+    EmulatedGraphics::ScissorsAndViewportData scissors_and_viewport_data, bool is_xfb)
 {
+  // [FB-DBG] Log the framebuffer that will receive this clear.
+  if (is_xfb)
+  {
+    const auto* cur_fb = g_gfx->GetCurrentFramebuffer();
+    ERROR_LOG_FMT(VIDEO,
+                  "[FB-DBG] EmulatedGraphicsHandler::OnFramebufferClear is_xfb=true "
+                  "rect=({},{},{}x{}) C={} A={} Z={} bound_fb={:#x} fb_dims={}x{}",
+                  clear_data.src_rect.left, clear_data.src_rect.top, clear_data.src_rect.GetWidth(),
+                  clear_data.src_rect.GetHeight(), clear_data.color_enable, clear_data.alpha_enable,
+                  clear_data.z_enable, reinterpret_cast<u64>(cur_fb),
+                  cur_fb ? cur_fb->GetWidth() : 0, cur_fb ? cur_fb->GetHeight() : 0);
+  }
+
   BPFunctions::ClearScreen(m_frame_buffer_manager, clear_data.src_rect, clear_data.color_enable,
                            clear_data.alpha_enable, clear_data.z_enable, clear_data.pixel_format,
                            clear_data.color_ar, clear_data.color_gb, clear_data.z_value);
