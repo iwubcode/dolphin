@@ -23,25 +23,21 @@ std::unique_ptr<EFBInterfaceBase> g_efb_interface;
 
 EFBInterfaceBase::~EFBInterfaceBase() = default;
 
-void EFBInterfaceBase::SetFramebufferManager(FramebufferManager* framebuffer_manager)
-{
-  m_framebuffer_manager = framebuffer_manager;
-}
-
 bool EFBInterfaceBase::ShouldSkipAccess(u16 x, u16 y) const
 {
   return !g_ActiveConfig.bEFBAccessEnable || x >= EFB_WIDTH || y >= EFB_HEIGHT;
 }
 
-void HardwareEFBInterface::ReinterpretPixelData(EFBReinterpretType convtype)
+void HardwareEFBInterface::ReinterpretPixelData(FramebufferManager* framebuffer_manager,
+                                                EFBReinterpretType convtype)
 {
-  m_framebuffer_manager->ReinterpretPixelData(convtype);
+  framebuffer_manager->ReinterpretPixelData(convtype);
 }
 
-u32 HardwareEFBInterface::PeekColorInternal(u16 x, u16 y)
+u32 HardwareEFBInterface::PeekColorInternal(FramebufferManager* framebuffer_manager, u16 x, u16 y)
 {
   u32 color = AsyncRequests::GetInstance()->PushBlockingEvent(
-      [&, framebuffer_manager = m_framebuffer_manager] {
+      [&, framebuffer_manager = framebuffer_manager] {
         INCSTAT(g_stats.this_frame.num_efb_peeks);
         return framebuffer_manager->PeekEFBColor(x, y);
       });
@@ -65,12 +61,12 @@ u32 HardwareEFBInterface::PeekColorInternal(u16 x, u16 y)
   return color;
 }
 
-u32 EFBInterfaceBase::PeekColor(u16 x, u16 y)
+u32 EFBInterfaceBase::PeekColor(FramebufferManager* framebuffer_manager, u16 x, u16 y)
 {
   if (ShouldSkipAccess(x, y))
     return 0;
 
-  u32 color = PeekColorInternal(x, y);
+  u32 color = PeekColorInternal(framebuffer_manager, x, y);
 
   // check what to do with the alpha channel (GX_PokeAlphaRead)
   PixelEngine::AlphaReadMode alpha_read_mode =
@@ -94,10 +90,10 @@ u32 EFBInterfaceBase::PeekColor(u16 x, u16 y)
   }
 }
 
-u32 HardwareEFBInterface::PeekDepthInternal(u16 x, u16 y)
+u32 HardwareEFBInterface::PeekDepthInternal(FramebufferManager* framebuffer_manager, u16 x, u16 y)
 {
   float depth = AsyncRequests::GetInstance()->PushBlockingEvent(
-      [&, framebuffer_manager = m_framebuffer_manager] {
+      [&, framebuffer_manager = framebuffer_manager] {
         INCSTAT(g_stats.this_frame.num_efb_peeks);
         return framebuffer_manager->PeekEFBDepth(x, y);
       });
@@ -126,15 +122,16 @@ u32 HardwareEFBInterface::PeekDepthInternal(u16 x, u16 y)
   return z24depth;
 }
 
-u32 EFBInterfaceBase::PeekDepth(u16 x, u16 y)
+u32 EFBInterfaceBase::PeekDepth(FramebufferManager* framebuffer_manager, u16 x, u16 y)
 {
   if (ShouldSkipAccess(x, y))
     return 0;
 
-  return PeekDepthInternal(x, y);
+  return PeekDepthInternal(framebuffer_manager, x, y);
 }
 
-void HardwareEFBInterface::PokeColor(u16 x, u16 y, u32 poke_data)
+void HardwareEFBInterface::PokeColor(FramebufferManager* framebuffer_manager, u16 x, u16 y,
+                                     u32 poke_data)
 {
   if (ShouldSkipAccess(x, y))
     return;
@@ -144,14 +141,14 @@ void HardwareEFBInterface::PokeColor(u16 x, u16 y, u32 poke_data)
   const u32 color =
       ((poke_data & 0xFF00FF00) | ((poke_data >> 16) & 0xFF) | ((poke_data << 16) & 0xFF0000));
 
-  AsyncRequests::GetInstance()->PushEvent(
-      [x, y, color, framebuffer_manager = m_framebuffer_manager] {
-        INCSTAT(g_stats.this_frame.num_efb_pokes);
-        framebuffer_manager->PokeEFBColor(x, y, color);
-      });
+  AsyncRequests::GetInstance()->PushEvent([x, y, color, framebuffer_manager = framebuffer_manager] {
+    INCSTAT(g_stats.this_frame.num_efb_pokes);
+    framebuffer_manager->PokeEFBColor(x, y, color);
+  });
 }
 
-void HardwareEFBInterface::PokeDepth(u16 x, u16 y, u32 poke_data)
+void HardwareEFBInterface::PokeDepth(FramebufferManager* framebuffer_manager, u16 x, u16 y,
+                                     u32 poke_data)
 {
   if (ShouldSkipAccess(x, y))
     return;
@@ -161,9 +158,8 @@ void HardwareEFBInterface::PokeDepth(u16 x, u16 y, u32 poke_data)
   if (!g_backend_info.bSupportsReversedDepthRange)
     depth = 1.0f - depth;
 
-  AsyncRequests::GetInstance()->PushEvent(
-      [x, y, depth, framebuffer_manager = m_framebuffer_manager] {
-        INCSTAT(g_stats.this_frame.num_efb_pokes);
-        framebuffer_manager->PokeEFBDepth(x, y, depth);
-      });
+  AsyncRequests::GetInstance()->PushEvent([x, y, depth, framebuffer_manager = framebuffer_manager] {
+    INCSTAT(g_stats.this_frame.num_efb_pokes);
+    framebuffer_manager->PokeEFBDepth(x, y, depth);
+  });
 }
