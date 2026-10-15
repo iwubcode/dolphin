@@ -1,5 +1,7 @@
 #include "VideoCommon/EmulatedGraphicsManager.h"
 
+#include "Common/Logging/Log.h"
+
 #include "Core/System.h"
 
 #include "VideoCommon/EFBInterface.h"
@@ -17,8 +19,8 @@ namespace
 /*class TestGraphicsHandler final : public IGraphicsHandler
 {
 public:
-  TestGraphicsHandler(XFBFrame* frame)
-      : m_xfb_frame(frame), m_emulated_graphics_handler(g_framebuffer_manager.get(), true)
+  TestGraphicsHandler(XFBCopyData* frame)
+      : m_xfb_copy_data(frame), m_emulated_graphics_handler(g_framebuffer_manager.get(), true)
   {
   }
 
@@ -33,11 +35,11 @@ public:
 
     if (copy_data.pe_copy.copy_to_xfb != 0)
     {
-      m_xfb_frame->Reset();
+      m_xfb_copy_data->Reset();
     }
     else
     {
-      m_xfb_frame->AddRenderTargetData(XFBFrame::RenderTargetData{
+      m_xfb_copy_data->AddRenderTargetData(XFBCopyData::RenderTargetData{
           .copy_data = std::move(copy_data),
           .clear_data = std::move(clear_data),
           .scissors_and_viewport_data = std::move(scissors_and_viewport_data),
@@ -49,19 +51,19 @@ public:
       EmulatedGraphics::ScissorsAndViewportData scissors_and_viewport_data) override
   {
     m_emulated_graphics_handler.SetScissorAndViewport(scissors_and_viewport_data);
-    m_xfb_frame->AddScissorsAndViewportData(std::move(scissors_and_viewport_data));
+    m_xfb_copy_data->AddScissorsAndViewportData(std::move(scissors_and_viewport_data));
   }
 
   void PixelEngineOperation(EmulatedGraphics::PixelEngineData pixel_engine_data, bool notify_cpu,
                             bool notify_gpu) override
   {
     m_emulated_graphics_handler.PixelEngineOperation(pixel_engine_data, notify_cpu, notify_gpu);
-    m_xfb_frame->AddPixelEngineOperationData(std::move(pixel_engine_data));
+    m_xfb_copy_data->AddPixelEngineOperationData(std::move(pixel_engine_data));
   }
   void PixelFormatChange(EmulatedGraphics::PixelFormatChangeData pixel_format_change_data) override
   {
     m_emulated_graphics_handler.PixelFormatChange(pixel_format_change_data);
-    m_xfb_frame->AddPixelFormatChangeData(std::move(pixel_format_change_data));
+    m_xfb_copy_data->AddPixelFormatChangeData(std::move(pixel_format_change_data));
   }
 
   void OnDraw(EmulatedGraphics::DrawCallData draw_call_data) override
@@ -77,29 +79,29 @@ public:
     draw_call_data.geometry_manager->dirty = geometry_shader_constants_dirty;
     draw_call_data.pixel_manager->dirty = pixel_shader_constants_dirty;
     draw_call_data.vertex_manager->dirty = vertex_shader_constants_dirty;
-    m_xfb_frame->AddDrawData(std::move(draw_call_data));
+    m_xfb_copy_data->AddDrawData(std::move(draw_call_data));
   }
 
   void
   OnReinterpretTexture(EmulatedGraphics::ReinterpretTextureData reinterpret_texture_data) override
   {
     m_emulated_graphics_handler.OnReinterpretTexture(reinterpret_texture_data);
-    m_xfb_frame->AddReinterpretTextureData(std::move(reinterpret_texture_data));
+    m_xfb_copy_data->AddReinterpretTextureData(std::move(reinterpret_texture_data));
   }
   void OnPaletteTexture(EmulatedGraphics::PaletteTextureData palette_texture_data) override
   {
     m_emulated_graphics_handler.OnPaletteTexture(palette_texture_data);
-    m_xfb_frame->AddPaletteTextureData(std::move(palette_texture_data));
+    m_xfb_copy_data->AddPaletteTextureData(std::move(palette_texture_data));
   }
   void OnScaleTexture(EmulatedGraphics::ScaleTextureData scale_texture_data) override
   {
     m_emulated_graphics_handler.OnScaleTexture(scale_texture_data);
-    m_xfb_frame->AddScaleTextureData(std::move(scale_texture_data));
+    m_xfb_copy_data->AddScaleTextureData(std::move(scale_texture_data));
   }
 
 private:
   EmulatedGraphicsHandler m_emulated_graphics_handler;
-  XFBFrame* m_xfb_frame;
+  XFBCopyData* m_xfb_copy_data;
 };*/
 }  // namespace
 
@@ -113,11 +115,11 @@ void EmulatedGraphicsManager::Initialize()
 
   auto& system = Core::System::GetInstance();
   auto& mod_manager = system.GetGraphicsModManager();
-  XFBFrame* frame_data = mod_manager.GetBackend().GetFrameData();
+  XFBCopyData* copy_data = mod_manager.GetBackend().GetCopyData();
 
   m_deferred_native_graphics_handler =
-      std::make_unique<DeferredGraphicsHandler>(frame_data, m_native_framebuffer_manager.get());
-  m_deferred_graphics_handler = std::make_unique<DeferredGraphicsHandler>(frame_data, nullptr);
+      std::make_unique<DeferredGraphicsHandler>(copy_data, m_native_framebuffer_manager.get());
+  m_deferred_graphics_handler = std::make_unique<DeferredGraphicsHandler>(copy_data, nullptr);
 
   // Whether we actually place our EFB copy in RAM is still determined by config at that time
   // This just says whether to actually try and trigger one during the EFB copy step
@@ -131,7 +133,15 @@ void EmulatedGraphicsManager::Initialize()
   m_config_changed =
       GetVideoEvents().config_changed_event.Register([this](u32) { SettingsChanged(); });
 
+  m_active_deferred = nullptr;
+
   SettingsChanged();
+
+  // Start with binding the main framebuffer
+  // this is because initializing the native framebuffer, actually sets
+  // the Begin/End utility drawing global...
+  // TODO: This probably shouldn't be here, need to find a cleaner fix
+  g_framebuffer_manager->BindEFBFramebuffer();
 }
 
 void EmulatedGraphicsManager::Shutdown()
@@ -143,9 +153,9 @@ void EmulatedGraphicsManager::Shutdown()
   m_normal_graphicsmod_graphics_handler.reset();
 }
 
-EFBInterfaceBase* EmulatedGraphicsManager::GetEFBInterface() const
+FramebufferManager* EmulatedGraphicsManager::GetPeekPokeFramebuffer() const
 {
-  return g_efb_interface.get();
+  return m_peek_poke_framebuffer_manager;
 }
 
 IGraphicsHandler* EmulatedGraphicsManager::GetGraphicsHandler() const
@@ -155,9 +165,24 @@ IGraphicsHandler* EmulatedGraphicsManager::GetGraphicsHandler() const
 
 void EmulatedGraphicsManager::SettingsChanged()
 {
-  g_efb_interface->SetFramebufferManager(g_framebuffer_manager.get());
+  m_peek_poke_framebuffer_manager = g_framebuffer_manager.get();
 
-  const bool should_defer = true;
+  // Scrub session reset (Phase 3 §7): SettingsChanged fires on resume as well as
+  // settings changes, so a lingering scrub position / executed sets never survive
+  // a mode or state transition.
+  if (m_active_deferred)
+    m_active_deferred->ResetScrubSession();
+  m_active_deferred = nullptr;
+
+  // Deferred rendering requires the backend to be able to safely replay recorded
+  // draws (bSupportsDeferredGraphics). Metal is gated off: its upload ring orphans
+  // vertex buffers, so snapshot offsets can outlive the buffers they reference.
+  const bool should_defer = g_backend_info.bSupportsDeferredGraphics;
+  if (g_ActiveConfig.bGraphicMods && !should_defer)
+  {
+    WARN_LOG_FMT(VIDEO, "Deferred rendering is not supported by this backend; "
+                        "graphic mods will render in normal mode");
+  }
 
   if (g_ActiveConfig.bGraphicMods)
   {
@@ -171,13 +196,15 @@ void EmulatedGraphicsManager::SettingsChanged()
       if (!g_ActiveConfig.bSkipEFBCopyToRam || g_ActiveConfig.bEFBAccessEnable)
       {
         // Need to force a native resolution version as well
-        g_efb_interface->SetFramebufferManager(m_native_framebuffer_manager.get());
         m_graphics_handler = m_deferred_native_graphics_handler.get();
+        m_active_deferred = static_cast<DeferredGraphicsHandler*>(m_graphics_handler);
         DeferredPerf::Telemetry::Get().SetMode(DeferredPerf::Mode::DeferredNativeEfb);
+        m_peek_poke_framebuffer_manager = m_native_framebuffer_manager.get();
       }
       else
       {
         m_graphics_handler = m_deferred_graphics_handler.get();
+        m_active_deferred = static_cast<DeferredGraphicsHandler*>(m_graphics_handler);
         DeferredPerf::Telemetry::Get().SetMode(DeferredPerf::Mode::Deferred);
       }
     }
@@ -187,4 +214,23 @@ void EmulatedGraphicsManager::SettingsChanged()
     m_graphics_handler = m_normal_graphics_handler.get();
     DeferredPerf::Telemetry::Get().SetMode(DeferredPerf::Mode::Normal);
   }
+}
+
+void EmulatedGraphicsManager::ReplayPresentedFrame()
+{
+  if (m_active_deferred)
+    m_active_deferred->ReplayPresentedFrame();
+}
+
+void EmulatedGraphicsManager::RequestScrubPrefix(std::optional<std::size_t> global_op)
+{
+  // Null in normal modes → silent no-op (contract §4).
+  if (m_active_deferred)
+    m_active_deferred->RequestScrubPrefix(global_op);
+}
+
+void EmulatedGraphicsManager::ClearPresentedFrames()
+{
+  if (m_active_deferred)
+    m_active_deferred->ClearPresentedFrames();
 }
