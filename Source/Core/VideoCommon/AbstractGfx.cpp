@@ -4,6 +4,7 @@
 #include "VideoCommon/AbstractGfx.h"
 
 #include "Common/Assert.h"
+#include "Common/Logging/Log.h"
 
 #include "VideoCommon/AbstractFramebuffer.h"
 #include "VideoCommon/AbstractTexture.h"
@@ -30,19 +31,28 @@ bool AbstractGfx::IsHeadless() const
 void AbstractGfx::BeginUtilityDrawing()
 {
   g_vertex_manager->Flush();
+  // A utility pass is a transaction: remember what was bound so EndUtilityDrawing can
+  // restore it, instead of assuming the caller was on the main EFB.
+  m_utility_saved_framebuffer = m_current_framebuffer;
 }
 
 void AbstractGfx::EndUtilityDrawing()
 {
-  // Reset framebuffer. Pipeline will be reset at next draw.
-  g_framebuffer_manager->BindEFBFramebuffer();
+  // Restore the framebuffer that was bound when this utility pass began. In normal mode
+  // that is always the main EFB, so behavior there is unchanged; in deferred mode a
+  // utility pass fired mid-replay no longer yanks the binding off the replay target.
+  // If nothing was bound (e.g. before the first draw), fall back to the main EFB as
+  // this function always did.
+  SetFramebuffer(m_utility_saved_framebuffer ? m_utility_saved_framebuffer :
+                                               g_framebuffer_manager->GetEFBFramebuffer());
 
-  // THROWAWAY telemetry: record that a utility pass just forced the bound target back to the
-  // main EFB. If this happens mid-way through a native-EBF replay batch, subsequent draws keep
-  // their native-scale viewport but land on the main (high-IR) framebuffer -> tiny image in the
-  // top-left corner. No-op unless an op dump is active.
+  // THROWAWAY telemetry: record whether a utility pass just restored a bound target that
+  // differs from the main EFB, i.e. it was fired inside a native-EBF replay batch. No-op
+  // unless an op dump is active.
   if (DeferredPerf::kTelemetryEnabled)
-    DeferredPerf::Telemetry::Get().LogUtilityRebind();
+    DeferredPerf::Telemetry::Get().LogUtilityRebind(m_utility_saved_framebuffer != nullptr &&
+                                                    m_utility_saved_framebuffer !=
+                                                        g_framebuffer_manager->GetEFBFramebuffer());
 
   // Reset our viewport and scissor to the last stored value
   SetViewport(m_viewport_and_scissor.viewport_x, m_viewport_and_scissor.viewport_y,
@@ -73,6 +83,18 @@ void AbstractGfx::ClearRegion(const MathUtil::Rectangle<int>& target_rc, bool co
 {
   // This is a generic fallback for any ClearRegion operations that backends don't support.
   // It simply draws a Quad.
+
+  // [FB-DBG] Log what framebuffer receives this clear quad draw.
+  {
+    const auto* bound = m_current_framebuffer;
+    ERROR_LOG_FMT(VIDEO,
+                  "[FB-DBG] ClearRegion rect=({},{},{}x{}) C={} A={} Z={} "
+                  "bound_fb={:#x} fb_dims={}x{}",
+                  target_rc.left, target_rc.top, target_rc.GetWidth(), target_rc.GetHeight(),
+                  colorEnable, alphaEnable, zEnable,
+                  reinterpret_cast<u64>(bound),
+                  bound ? bound->GetWidth() : 0, bound ? bound->GetHeight() : 0);
+  }
 
   BeginUtilityDrawing();
 
