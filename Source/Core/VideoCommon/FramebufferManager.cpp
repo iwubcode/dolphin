@@ -396,11 +396,14 @@ bool FramebufferManager::ReinterpretPixelData(EFBReinterpretType convtype)
   g_gfx->SetPipeline(m_format_conversion_pipelines[static_cast<u32>(convtype)].get());
   g_gfx->SetTexture(0, m_efb_color_texture.get());
   g_gfx->Draw(0, 3);
+  // The utility pass is a pure transaction: it restores the pre-pass binding.
+  g_gfx->EndUtilityDrawing();
 
   // And swap the framebuffers around, so we do new drawing to the converted framebuffer.
   std::swap(m_efb_color_texture, m_efb_convert_color_texture);
   std::swap(m_efb_framebuffer, m_efb_convert_framebuffer);
-  g_gfx->EndUtilityDrawing();
+  // The EFB's pixel format changed: from now on, drawing targets the converted framebuffer.
+  BindEFBFramebuffer();
   InvalidatePeekCache(true);
   return true;
 }
@@ -866,6 +869,15 @@ void FramebufferManager::ClearEFB(const MathUtil::Rectangle<int>& rc, bool color
   MathUtil::Rectangle<int> target_rc = ConvertEFBRectangle(rc);
   target_rc = g_gfx->ConvertFramebufferRectangle(target_rc, m_efb_framebuffer.get());
   target_rc.ClampUL(0, 0, m_efb_framebuffer->GetWidth(), m_efb_framebuffer->GetWidth());
+
+  // [FB-DBG] Log ALL ClearEFB calls to track the missing XFB clear in deferred mode.
+  ERROR_LOG_FMT(VIDEO,
+                "[FB-DBG] ClearEFB input=({},{},{}x{}) -> converted=({},{},{}x{}) "
+                "C={} A={} Z={} color={:#010x} fmt={:x} efb_dims={}x{}",
+                rc.left, rc.top, rc.GetWidth(), rc.GetHeight(), target_rc.left, target_rc.top,
+                target_rc.GetWidth(), target_rc.GetHeight(), color_enable, alpha_enable, z_enable,
+                color, static_cast<u32>(pixel_format), m_efb_framebuffer->GetWidth(),
+                m_efb_framebuffer->GetHeight());
 
   // Determine whether the EFB has an alpha channel. If it doesn't, we can clear the alpha
   // channel to 0xFF.
