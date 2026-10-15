@@ -1477,8 +1477,8 @@ void VertexManagerBase::DrawGraphicsData(FramebufferManager* framebuffer_manager
   // Even if we skip the draw, emulated state should still be impacted
   OnDraw();
 
-  // The EFB cache is now potentially stale.
-  g_framebuffer_manager->FlagPeekCacheAsOutOfDate();
+  // The EFB cache of the target this draw landed on is now potentially stale.
+  framebuffer_manager->FlagPeekCacheAsOutOfDate();
 
   if (telemetry)
   {
