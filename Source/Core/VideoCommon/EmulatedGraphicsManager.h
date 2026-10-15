@@ -21,7 +21,7 @@ public:
   void Initialize();
   void Shutdown();
 
-  EFBInterfaceBase* GetEFBInterface() const;
+  FramebufferManager* GetPeekPokeFramebuffer() const;
   IGraphicsHandler* GetGraphicsHandler() const;
 
 private:
@@ -34,6 +34,7 @@ private:
   std::unique_ptr<FramebufferManager> m_native_framebuffer_manager;
 
   IGraphicsHandler* m_graphics_handler;
+  FramebufferManager* m_peek_poke_framebuffer_manager;
 
   Common::EventHook m_config_changed;
 };

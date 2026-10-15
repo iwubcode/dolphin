@@ -132,6 +132,12 @@ void EmulatedGraphicsManager::Initialize()
       GetVideoEvents().config_changed_event.Register([this](u32) { SettingsChanged(); });
 
   SettingsChanged();
+
+  // Start with binding the main framebuffer
+  // this is because initializing the native framebuffer, actually sets
+  // the Begin/End utility drawing global...
+  // TODO: This probably shouldn't be here, need to find a cleaner fix
+  g_framebuffer_manager->BindEFBFramebuffer();
 }
 
 void EmulatedGraphicsManager::Shutdown()
@@ -143,9 +149,9 @@ void EmulatedGraphicsManager::Shutdown()
   m_normal_graphicsmod_graphics_handler.reset();
 }
 
-EFBInterfaceBase* EmulatedGraphicsManager::GetEFBInterface() const
+FramebufferManager* EmulatedGraphicsManager::GetPeekPokeFramebuffer() const
 {
-  return g_efb_interface.get();
+  return m_peek_poke_framebuffer_manager;
 }
 
 IGraphicsHandler* EmulatedGraphicsManager::GetGraphicsHandler() const
@@ -155,7 +161,7 @@ IGraphicsHandler* EmulatedGraphicsManager::GetGraphicsHandler() const
 
 void EmulatedGraphicsManager::SettingsChanged()
 {
-  g_efb_interface->SetFramebufferManager(g_framebuffer_manager.get());
+  m_peek_poke_framebuffer_manager = g_framebuffer_manager.get();
 
   const bool should_defer = true;
 
@@ -171,9 +177,9 @@ void EmulatedGraphicsManager::SettingsChanged()
       if (!g_ActiveConfig.bSkipEFBCopyToRam || g_ActiveConfig.bEFBAccessEnable)
       {
         // Need to force a native resolution version as well
-        g_efb_interface->SetFramebufferManager(m_native_framebuffer_manager.get());
         m_graphics_handler = m_deferred_native_graphics_handler.get();
         DeferredPerf::Telemetry::Get().SetMode(DeferredPerf::Mode::DeferredNativeEfb);
+        m_peek_poke_framebuffer_manager = m_native_framebuffer_manager.get();
       }
       else
       {
