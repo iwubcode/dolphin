@@ -187,12 +187,14 @@ public:
   virtual SurfaceInfo GetSurfaceInfo() const = 0;
 
 protected:
-  AbstractFramebuffer* m_current_framebuffer = nullptr;
-  const AbstractPipeline* m_current_pipeline = nullptr;
+ AbstractFramebuffer* m_current_framebuffer = nullptr;
+ const AbstractPipeline* m_current_pipeline = nullptr;
 
 private:
-  Common::EventHook m_config_changed;
-  ViewportAndScissor m_viewport_and_scissor;
+ Common::EventHook m_config_changed;
+ ViewportAndScissor m_viewport_and_scissor;
+ // Framebuffer bound when the current utility pass began (see BeginUtilityDrawing).
+ AbstractFramebuffer* m_utility_saved_framebuffer = nullptr;
 };
 
 extern std::unique_ptr<AbstractGfx> g_gfx;
