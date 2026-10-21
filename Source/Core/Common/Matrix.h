@@ -428,6 +428,10 @@ public:
   static Matrix44 Shear(const float a, const float b = 0);
   static Matrix44 Perspective(float fov_y, float aspect_ratio, float z_near, float z_far);
 
+  // Scales the rows of a matrix: row0 *= f.x, row1 *= f.y (left-multiply by
+  // diag(f.x, f.y, 1, 1)).
+  static Matrix44 Scale(const Matrix44& m, const Vec2& f);
+
   static void Multiply(const Matrix44& a, const Matrix44& b, Matrix44* result);
   static void Multiply(const Matrix44& a, const Vec4& vec, Vec4* result);
 

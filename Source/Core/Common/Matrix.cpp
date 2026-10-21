@@ -465,4 +465,15 @@ Matrix44 Matrix44::Transposed() const
   return result;
 }
 
+Matrix44 Matrix44::Scale(const Matrix44& m, const Vec2& f)
+{
+  Matrix44 result = m;
+  for (std::size_t col = 0; col < 4; ++col)
+  {
+    result.data[col] *= f.x;
+    result.data[4 + col] *= f.y;
+  }
+  return result;
+}
+
 }  // namespace Common
