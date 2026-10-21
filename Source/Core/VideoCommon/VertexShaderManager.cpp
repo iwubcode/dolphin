@@ -18,12 +18,15 @@
 #include "VideoCommon/EmulatedGraphicsManager.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/FreeLookCamera.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/CameraModifierService.h"
 #include "VideoCommon/IGraphicsHandler.h"
 #include "VideoCommon/Statistics.h"
 #include "VideoCommon/VideoCommon.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/XFMemory.h"
 #include "VideoCommon/XFStateManager.h"
+
+using GraphicsModSystem::Runtime::g_camera_modifier_service;
 
 void VertexShaderManager::Init()
 {
@@ -44,17 +47,16 @@ Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
   {
   case ProjectionType::Perspective:
   {
-    const Common::Vec2 fov_multiplier = g_freelook_camera.IsActive() ?
-                                            g_freelook_camera.GetFieldOfViewMultiplier() :
-                                            Common::Vec2{1, 1};
-    m_projection_matrix[0] = rawProjection[0] * g_ActiveConfig.fAspectRatioHackW * fov_multiplier.x;
+    // Raw base only: no FOV, no view (camera truth contract §2.2). FOV and view are
+    // composed only at draw time by the CameraModifierService.
+    m_projection_matrix[0] = rawProjection[0] * g_ActiveConfig.fAspectRatioHackW;
     m_projection_matrix[1] = 0.0f;
-    m_projection_matrix[2] = rawProjection[1] * g_ActiveConfig.fAspectRatioHackW * fov_multiplier.x;
+    m_projection_matrix[2] = rawProjection[1] * g_ActiveConfig.fAspectRatioHackW;
     m_projection_matrix[3] = 0.0f;
 
     m_projection_matrix[4] = 0.0f;
-    m_projection_matrix[5] = rawProjection[2] * g_ActiveConfig.fAspectRatioHackH * fov_multiplier.y;
-    m_projection_matrix[6] = rawProjection[3] * g_ActiveConfig.fAspectRatioHackH * fov_multiplier.y;
+    m_projection_matrix[5] = rawProjection[2] * g_ActiveConfig.fAspectRatioHackH;
+    m_projection_matrix[6] = rawProjection[3] * g_ActiveConfig.fAspectRatioHackH;
     m_projection_matrix[7] = 0.0f;
 
     m_projection_matrix[8] = 0.0f;
@@ -67,8 +69,6 @@ Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
 
     m_projection_matrix[14] = -1.0f;
     m_projection_matrix[15] = 0.0f;
-
-    g_stats.gproj = m_projection_matrix;
   }
   break;
 
@@ -107,34 +107,26 @@ Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
   PRIM_LOG("Projection: {} {} {} {} {} {}", rawProjection[0], rawProjection[1], rawProjection[2],
            rawProjection[3], rawProjection[4], rawProjection[5]);
 
-  auto corrected_matrix = Common::Matrix44::FromArray(m_projection_matrix);
-
-  if (g_freelook_camera.IsActive() && xfmem.projection.type == ProjectionType::Perspective)
-    corrected_matrix *= g_freelook_camera.GetView();
-
-  g_freelook_camera.GetController()->SetClean();
-
-  return corrected_matrix;
+  return Common::Matrix44::FromArray(m_projection_matrix);
 }
 
 void VertexShaderManager::SetProjectionMatrix(XFStateManager& xf_state_manager)
 {
-  if (xf_state_manager.DidProjectionChange() || g_freelook_camera.GetController()->IsDirty())
+  if (xf_state_manager.DidProjectionChange())
   {
     xf_state_manager.ResetProjection();
-    auto corrected_matrix = LoadProjectionMatrix() * m_last_camera_modifier;
-    memcpy(constants.projection.data(), corrected_matrix.data.data(), 4 * sizeof(float4));
-  }
-}
 
-void VertexShaderManager::ForceProjectionMatrixUpdate(XFStateManager& xf_state_manager,
-                                                      const Common::Matrix44& modifier)
-{
-  m_last_camera_modifier = modifier;
-  xf_state_manager.ResetProjection();
-  auto corrected_matrix = LoadProjectionMatrix() * m_last_camera_modifier;
-  memcpy(constants.projection.data(), corrected_matrix.data.data(), 4 * sizeof(float4));
-  dirty = true;
+    // Raw at rest: the field holds the raw base; the camera is composed only at
+    // draw time by the CameraModifierService (camera truth contract §2.2).
+    const auto raw = LoadProjectionMatrix();
+    memcpy(constants.projection.data(), raw.data.data(), 4 * sizeof(float4));
+
+    // The debug overlay keeps its current values (raw × fov, no view).
+    if (raw.data[15] == 0.0f)
+      g_stats.gproj = Common::Matrix44::Scale(raw, g_camera_modifier_service.CurrentFov()).data;
+
+    g_camera_modifier_service.OnProjectionChanged();  // base is now m_projection_matrix
+  }
 }
 
 bool VertexShaderManager::UseVertexDepthRange()
@@ -404,13 +396,21 @@ void VertexShaderManager::SetConstants(XFStateManager& xf_state_manager)
     g_stats.AddScissorRect();
   }
 
-  if (xf_state_manager.DidProjectionChange() || g_freelook_camera.GetController()->IsDirty())
+  if (xf_state_manager.DidProjectionChange())
   {
     xf_state_manager.ResetProjection();
 
-    auto corrected_matrix = LoadProjectionMatrix() * m_last_camera_modifier;
+    // Raw at rest: the field holds the raw base; the camera is composed only at
+    // draw time by the CameraModifierService (camera truth contract §2.2).
+    const auto raw = LoadProjectionMatrix();
+    memcpy(constants.projection.data(), raw.data.data(), 4 * sizeof(float4));
 
-    memcpy(constants.projection.data(), corrected_matrix.data.data(), 4 * sizeof(float4));
+    // The debug overlay keeps its current values (raw × fov, no view).
+    if (raw.data[15] == 0.0f)
+      g_stats.gproj = Common::Matrix44::Scale(raw, g_camera_modifier_service.CurrentFov()).data;
+
+    g_camera_modifier_service.OnProjectionChanged();  // base is now m_projection_matrix
+
     dirty = true;
   }
 
@@ -444,10 +444,17 @@ void VertexShaderManager::TransformToClipSpace(const float* data, float* out, u3
 {
   const float* world_matrix = &xfmem.posMatrices[(MtxIdx & 0x3f) * 4];
 
-  // We use the projection matrix calculated by VertexShaderManager, because it
-  // includes any free look transformations.
+  // m_projection_matrix is the raw base (no FOV, no view). The historical value seen
+  // here included the FOV but never the view, so compose the FOV at read time
+  // (camera truth contract §2.2): the same raw entries, multiplied by the same
+  // operands in the same order, keep the z-slope bit-identical.
   // Make sure VertexShaderManager::SetConstants() has been called first.
-  const float* proj_matrix = &m_projection_matrix[0];
+  Common::Matrix44 read_matrix = GetRawProjectionBase();
+  if (read_matrix.data[15] == 0.0f)
+  {
+    read_matrix = Common::Matrix44::Scale(read_matrix, g_camera_modifier_service.CurrentFov());
+  }
+  const float* proj_matrix = read_matrix.data.data();
 
   const float t[3] = {data[0] * world_matrix[0] + data[1] * world_matrix[1] +
                           data[2] * world_matrix[2] + world_matrix[3],

@@ -25,9 +25,14 @@ public:
 
   // constant management
   void SetProjectionMatrix(XFStateManager& xf_state_manager);
-  void ForceProjectionMatrixUpdate(XFStateManager& xf_state_manager,
-                                   const Common::Matrix44& modifier);
   void SetConstants(XFStateManager& xf_state_manager);
+
+  /// The raw projection base (no FOV, no view). The recording's source of truth for
+  /// the projection field; also the replay hook's composition base.
+  Common::Matrix44 GetRawProjectionBase() const
+  {
+    return Common::Matrix44::FromArray(m_projection_matrix);
+  }
 
   // data: 3 floats representing the X, Y and Z vertex model coordinates and the posmatrix index.
   // out:  4 floats which will be initialized with the corresponding clip space coordinates
@@ -80,10 +85,10 @@ public:
   }
 
 private:
-  alignas(16) std::array<float, 16> m_projection_matrix;
-
-  // track changes
-  Common::Matrix44 m_last_camera_modifier = Common::Matrix44::Identity();
-
+  // Builds the raw projection base (xfmem rawProjection + aspect hacks only) into
+  // m_projection_matrix and returns it. No FOV, no view: the camera is composed
+  // only at draw time by the CameraModifierService (camera truth contract §2.2).
   Common::Matrix44 LoadProjectionMatrix();
+
+  alignas(16) std::array<float, 16> m_projection_matrix;
 };
