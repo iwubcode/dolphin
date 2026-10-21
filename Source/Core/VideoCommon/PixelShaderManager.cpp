@@ -8,7 +8,6 @@
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "VideoCommon/FramebufferManager.h"
-#include "VideoCommon/FreeLookCamera.h"
 #include "VideoCommon/VideoCommon.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/XFMemory.h"
@@ -175,21 +174,8 @@ void PixelShaderManager::SetConstants()
     }
   }
 
-  float* data = nullptr;
-  if (g_freelook_camera.IsActive() && xfmem.projection.type == ProjectionType::Perspective)
-  {
-    data = g_freelook_camera.GetView().data.data();
-  }
-  else
-  {
-    data = Common::Matrix44::Identity().data.data();
-  }
-  const std::size_t freelook_size = 4 * sizeof(float4);
-  if (memcmp(constants.freelook.data(), data, freelook_size) != 0)
-  {
-    memcpy(constants.freelook.data(), data, freelook_size);
-    dirty = true;
-  }
+  // constants.freelook is written only by the CameraModifierService at draw time
+  // (camera truth contract §2.5); it is never set here.
 }
 
 void PixelShaderManager::SetTevColor(int index, int component, s32 value)
