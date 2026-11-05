@@ -404,12 +404,16 @@ void VideoBackendBase::ShutdownShared()
   g_framebuffer_manager.reset();
   g_shader_cache.reset();
   g_vertex_manager.reset();
+  // Vertex formats must be destroyed while g_gfx is still alive: their
+  // destructors call ProgramShaderCache::InvalidateVertexFormatIfBound, which
+  // dereferences GetOGLGfx(). They must also be destroyed after
+  // g_vertex_manager, whose destructor reads GetCurrentVertexFormat().
+  VertexLoaderManager::Clear();
   g_efb_interface.reset();
   g_widescreen.reset();
   g_gfx.reset();
 
   m_initialized = false;
 
-  VertexLoaderManager::Clear();
   system.GetFifo().Shutdown();
 }
