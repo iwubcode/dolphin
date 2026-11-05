@@ -14,6 +14,8 @@ namespace Core
 class System;
 }
 
+struct TCacheEntry;
+
 struct PresentInfo
 {
   enum class PresentReason
@@ -62,6 +64,12 @@ struct PresentInfo
   PresentTimeAccuracy present_time_accuracy = PresentTimeAccuracy::Unimplemented;
 
   std::vector<std::string_view> xfb_copy_hashes;
+
+  // The texture-cache entries whose content composes the presented XFB: the
+  // container's references when stitched, or the entry itself when not. Pointer
+  // identity is the exact per-buffer key (texture_info_name is dimensions-only
+  // and collides across ping-pong buffers). Valid only during the event.
+  std::vector<const TCacheEntry*> xfb_copy_entries;
 };
 
 struct VideoEvents
