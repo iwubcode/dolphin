@@ -9,10 +9,13 @@
 #include "VideoCommon/IGraphicsHandler.h"
 #include "VideoCommon/TextureCacheBase.h"
 
-class XFBFrame
+/// The live op recorder. Accumulates operations between XFB copy boundaries.
+/// At each XFB copy, its contents are moved into an XFBCopy (via XFBCopy::AddData),
+/// leaving the recorder empty and ready for the next batch.
+class XFBCopyData
 {
 public:
-  XFBFrame();
+  XFBCopyData();
 
   enum class OperationType : u8
   {
@@ -51,7 +54,9 @@ public:
     std::optional<std::size_t> vertex_constant_index;
   };
 
-  struct FrameView
+  /// Spans over the owned storage vectors. Valid only while the underlying
+  /// vectors are not modified or destroyed.
+  struct View
   {
     std::span<const OperationReference> operations;
     std::span<const DrawData> draws;
@@ -76,7 +81,7 @@ public:
   void AddPaletteTextureData(EmulatedGraphics::PaletteTextureData data);
   void AddPartialTextureUpdateData(PartialTextureUpdateContext data);
 
-  FrameView GetView() const;
+  View GetView() const;
   std::size_t GetTotalOperations() const { return m_recorded_operations.size(); }
 
   using UniformState =

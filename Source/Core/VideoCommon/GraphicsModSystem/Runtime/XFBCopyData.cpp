@@ -1,4 +1,4 @@
-#include "VideoCommon/GraphicsModSystem/Runtime/FrameData.h"
+#include "VideoCommon/GraphicsModSystem/Runtime/XFBCopyData.h"
 
 #include <cstring>
 
@@ -11,8 +11,8 @@ namespace
 using namespace DeferredPerf;
 
 template <typename T>
-void AddOperation(std::vector<XFBFrame::OperationReference>& order, std::vector<T>& storage,
-                  T&& data, XFBFrame::OperationType type)
+void AddOperation(std::vector<XFBCopyData::OperationReference>& order, std::vector<T>& storage,
+                  T&& data, XFBCopyData::OperationType type)
 {
   if (!kTelemetryEnabled)
   {
@@ -28,14 +28,14 @@ void AddOperation(std::vector<XFBFrame::OperationReference>& order, std::vector<
 }
 }  // namespace
 
-XFBFrame::XFBFrame()
+XFBCopyData::XFBCopyData()
 {
   m_recorded_operations.reserve(5000);
   m_draws.reserve(5000);
   m_uniform_state_change.reserve(5000);
 }
 
-XFBFrame::FrameView XFBFrame::GetView() const
+XFBCopyData::View XFBCopyData::GetView() const
 {
   return {m_recorded_operations,
           m_draws,
@@ -49,7 +49,7 @@ XFBFrame::FrameView XFBFrame::GetView() const
           m_partial_texture_updates};
 }
 
-void XFBFrame::AddDrawData(EmulatedGraphics::DrawCallData data)
+void XFBCopyData::AddDrawData(EmulatedGraphics::DrawCallData data)
 {
   std::optional<std::size_t> geometry_constant_index;
   std::optional<std::size_t> pixel_constant_index;
@@ -107,13 +107,13 @@ void XFBFrame::AddDrawData(EmulatedGraphics::DrawCallData data)
   AddOperation(m_recorded_operations, m_draws, std::move(draw_data), OperationType::Draw);
 }
 
-void XFBFrame::AddRenderTargetData(RenderTargetData data)
+void XFBCopyData::AddRenderTargetData(RenderTargetData data)
 {
   AddOperation(m_recorded_operations, m_render_targets, std::move(data),
                OperationType::RenderTarget);
 }
 
-void XFBFrame::AddScissorsAndViewportData(EmulatedGraphics::ScissorsAndViewportData data)
+void XFBCopyData::AddScissorsAndViewportData(EmulatedGraphics::ScissorsAndViewportData data)
 {
   // Coalesce: a scissor/viewport change is idempotent state, so a change to the
   // same values as the last recorded one is a no-op. (Draws never modify this
@@ -130,19 +130,19 @@ void XFBFrame::AddScissorsAndViewportData(EmulatedGraphics::ScissorsAndViewportD
                OperationType::ScissorViewport);
 }
 
-void XFBFrame::AddClearData(EmulatedGraphics::ClearCopyData data)
+void XFBCopyData::AddClearData(EmulatedGraphics::ClearCopyData data)
 {
   // Not coalesced: a draw between two identical clears can modify the
   // framebuffer, so the second clear is not a no-op.
   AddOperation(m_recorded_operations, m_clears, std::move(data), OperationType::Clear);
 }
 
-void XFBFrame::AddPixelEngineOperationData(EmulatedGraphics::PixelEngineData data)
+void XFBCopyData::AddPixelEngineOperationData(EmulatedGraphics::PixelEngineData data)
 {
   AddOperation(m_recorded_operations, m_pixel_engine, std::move(data), OperationType::PixelEngine);
 }
 
-void XFBFrame::AddPixelFormatChangeData(EmulatedGraphics::PixelFormatChangeData data)
+void XFBCopyData::AddPixelFormatChangeData(EmulatedGraphics::PixelFormatChangeData data)
 {
   // Coalesce: the pixel format is idempotent state, so a change to the same
   // format as the last recorded one is a no-op. Games frequently re-issue the
@@ -159,19 +159,19 @@ void XFBFrame::AddPixelFormatChangeData(EmulatedGraphics::PixelFormatChangeData 
                OperationType::PixelFormatChange);
 }
 
-void XFBFrame::AddReinterpretTextureData(EmulatedGraphics::ReinterpretTextureData data)
+void XFBCopyData::AddReinterpretTextureData(EmulatedGraphics::ReinterpretTextureData data)
 {
   AddOperation(m_recorded_operations, m_reinterpret_textures, std::move(data),
                OperationType::ReinterpretTexture);
 }
 
-void XFBFrame::AddPaletteTextureData(EmulatedGraphics::PaletteTextureData data)
+void XFBCopyData::AddPaletteTextureData(EmulatedGraphics::PaletteTextureData data)
 {
   AddOperation(m_recorded_operations, m_palette_textures, std::move(data),
                OperationType::PaletteTexture);
 }
 
-void XFBFrame::AddPartialTextureUpdateData(PartialTextureUpdateContext data)
+void XFBCopyData::AddPartialTextureUpdateData(PartialTextureUpdateContext data)
 {
   AddOperation(m_recorded_operations, m_partial_texture_updates, std::move(data),
                OperationType::PartialTextureUpdate);
