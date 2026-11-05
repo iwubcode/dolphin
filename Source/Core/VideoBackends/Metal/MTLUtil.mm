@@ -78,6 +78,11 @@ void Metal::Util::PopulateBackendInfo(BackendInfo* backend_info)
   backend_info->bSupportsPartialMultisampleResolve = false;
   backend_info->bSupportsDynamicVertexLoader = true;
   backend_info->bSupportsVSLinePointExpand = true;
+  // Deferred rendering is gated OFF on Metal: the upload ring orphans vertex
+  // buffers, so snapshot offsets can outlive the buffers they reference.
+  // Enabling it later requires bind-by-buffer-generation (see
+  // plans/UtilityVertexArenaDesign.md §9).
+  backend_info->bSupportsDeferredGraphics = false;
   backend_info->bSupportsHDROutput =
       1.0 < [[NSScreen deepestScreen] maximumPotentialExtendedDynamicRangeColorComponentValue];
 }

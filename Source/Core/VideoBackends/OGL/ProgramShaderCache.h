@@ -67,9 +67,11 @@ struct PipelineProgram
 class ProgramShaderCache
 {
 public:
-  static void BindVertexFormat(const GLVertexFormat* vertex_format);
+  // Binds the VAO for the given vertex format. When utility is true, the
+  // format's utility VAO (bound to the utility vertex/index buffers) is
+  // selected instead of the main VAO.
+  static void BindVertexFormat(const GLVertexFormat* vertex_format, bool utility = false);
   static void ReBindVertexFormat();
-  static bool IsValidVertexFormatBound();
   static void InvalidateVertexFormat();
   static void InvalidateVertexFormatIfBound(GLuint vao);
   static void InvalidateLastProgram();

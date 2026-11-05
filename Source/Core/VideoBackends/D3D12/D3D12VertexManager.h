@@ -4,6 +4,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 
 #include "VideoBackends/D3D12/D3D12StreamBuffer.h"
 #include "VideoBackends/D3D12/DescriptorHeapManager.h"
@@ -33,6 +34,10 @@ protected:
   void SetBuffer(u32 vertex_stride) override;
   void UploadUniforms() override;
 
+  std::optional<UtilityRegion> LockUtilityBuffers(u32 vertex_bytes, u32 index_bytes,
+                                                  u32 vertex_stride) override;
+  void UnlockUtilityBuffers(u32 vertex_bytes, u32 index_bytes) override;
+
   void UpdateVertexShaderConstants();
   void UpdateGeometryShaderConstants();
   void UpdatePixelShaderConstants();
@@ -50,6 +55,19 @@ protected:
   StreamBuffer m_texel_stream_buffer;
   std::array<DescriptorHandle, NUM_TEXEL_BUFFER_FORMATS> m_texel_buffer_views = {};
   DescriptorHandle m_vertex_srv = {};
+
+  // Utility vertex arena: small dedicated stream buffers for transient draws
+  // (ImGui, EFB poke). Never recorded, never replayed. Sizing: vertex 4 MB,
+  // index 1 MB.
+  static constexpr u32 UTILITY_VERTEX_BUFFER_SIZE = 4 * 1024 * 1024;
+  static constexpr u32 UTILITY_INDEX_BUFFER_SIZE = 1 * 1024 * 1024;
+  StreamBuffer m_utility_vertex_stream_buffer;
+  StreamBuffer m_utility_index_stream_buffer;
+  DescriptorHandle m_utility_vertex_srv = {};
+
+  // Stride of the vertices in the current utility lock (set in LockUtilityBuffers,
+  // consumed by UnlockUtilityBuffers when binding the vertex buffer).
+  u32 m_utility_vertex_stride = 0;
 };
 
 }  // namespace DX12

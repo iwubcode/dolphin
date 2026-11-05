@@ -4,6 +4,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "Common/CommonTypes.h"
@@ -33,7 +34,12 @@ protected:
   void ResetBuffer(u32 vertex_stride) override;
   void CommitBuffer(u32 num_vertices, u32 vertex_stride, u32 num_indices, u32* out_base_vertex,
                     u32* out_base_index) override;
+  void SetBuffer(u32 vertex_stride) override;
   void UploadUniforms() override;
+
+  std::optional<UtilityRegion> LockUtilityBuffers(u32 vertex_bytes, u32 index_bytes,
+                                                  u32 vertex_stride) override;
+  void UnlockUtilityBuffers(u32 vertex_bytes, u32 index_bytes) override;
 
   void DestroyTexelBufferViews();
 
@@ -51,6 +57,13 @@ protected:
   std::unique_ptr<StreamBuffer> m_index_stream_buffer;
   std::unique_ptr<StreamBuffer> m_uniform_stream_buffer;
   std::unique_ptr<StreamBuffer> m_texel_stream_buffer;
+
+  // Utility vertex arena: small dedicated buffers for transient draws (ImGui,
+  // EFB poke). Never recorded, never replayed. Sizing: vertex 4 MB, index 1 MB.
+  static constexpr u32 UTILITY_VERTEX_BUFFER_SIZE = 4 * 1024 * 1024;
+  static constexpr u32 UTILITY_INDEX_BUFFER_SIZE = 1 * 1024 * 1024;
+  std::unique_ptr<StreamBuffer> m_utility_vertex_stream_buffer;
+  std::unique_ptr<StreamBuffer> m_utility_index_stream_buffer;
   std::array<VkBufferView, NUM_TEXEL_BUFFER_FORMATS> m_texel_buffer_views = {};
   u32 m_uniform_buffer_reserve_size = 0;
 };

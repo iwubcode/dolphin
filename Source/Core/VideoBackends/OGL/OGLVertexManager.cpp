@@ -21,14 +21,25 @@
 
 namespace OGL
 {
+// Utility arena sizes. The utility arena may only ever recycle itself, so
+// these are sized for the largest transient consumer (editor ImGui command
+// lists), not for game geometry.
+static constexpr u32 UTILITY_VERTEX_BUFFER_SIZE = 4 * 1024 * 1024;
+static constexpr u32 UTILITY_INDEX_BUFFER_SIZE = 1 * 1024 * 1024;
+
 static void CheckBufferBinding()
 {
-  // The index buffer is part of the VAO state, therefore we need to bind it first.
-  if (!ProgramShaderCache::IsValidVertexFormatBound())
-  {
-    ProgramShaderCache::BindVertexFormat(
-        static_cast<GLVertexFormat*>(VertexLoaderManager::GetCurrentVertexFormat()));
-  }
+  // Always request the current game format. A utility VAO may be bound
+  // (IsValidVertexFormatBound would call it "valid"), and the game path must
+  // never map or draw through a utility VAO's buffer bindings. The s_last_VAO
+  // dedup inside BindVertexFormat makes the common case a no-op.
+  ProgramShaderCache::BindVertexFormat(
+      static_cast<GLVertexFormat*>(VertexLoaderManager::GetCurrentVertexFormat()));
+
+  // The VAO binding was just mutated outside SetPipeline; force the next
+  // SetPipeline to re-apply its pipeline's VAO even if the pipeline object
+  // is unchanged.
+  GetOGLGfx()->InvalidatePipelineBinding();
 }
 
 VertexManager::VertexManager() = default;
@@ -44,8 +55,12 @@ VertexManager::~VertexManager()
   // VAO must be found when destroying the index buffer.
   CheckBufferBinding();
   m_texel_buffer.reset();
+  m_utility_index_buffer.reset();
+  m_utility_vertex_buffer.reset();
   m_index_buffer.reset();
   m_vertex_buffer.reset();
+  if (m_scratch_vao)
+    glDeleteVertexArrays(1, &m_scratch_vao);
 }
 
 bool VertexManager::Initialize()
@@ -59,6 +74,13 @@ bool VertexManager::Initialize()
   {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, m_vertex_buffer->GetGLBufferId());
   }
+
+  // Utility vertex arena: dedicated buffers for transient draws (ImGui, EFB
+  // poke) that must never touch the game ring. The scratch VAO is a binding
+  // container only (GLES3 forbids binding VAO 0); it is never drawn with.
+  m_utility_vertex_buffer = StreamBuffer::Create(GL_ARRAY_BUFFER, UTILITY_VERTEX_BUFFER_SIZE);
+  m_utility_index_buffer = StreamBuffer::Create(GL_ELEMENT_ARRAY_BUFFER, UTILITY_INDEX_BUFFER_SIZE);
+  glGenVertexArrays(1, &m_scratch_vao);
 
   if (g_backend_info.bSupportsPaletteConversion)
   {
@@ -156,6 +178,16 @@ GLuint VertexManager::GetIndexBufferHandle() const
   return m_index_buffer->m_buffer;
 }
 
+GLuint VertexManager::GetUtilityVertexBufferHandle() const
+{
+  return m_utility_vertex_buffer->m_buffer;
+}
+
+GLuint VertexManager::GetUtilityIndexBufferHandle() const
+{
+  return m_utility_index_buffer->m_buffer;
+}
+
 void VertexManager::ResetBuffer(u32 vertex_stride)
 {
   CheckBufferBinding();
@@ -178,12 +210,72 @@ void VertexManager::CommitBuffer(u32 num_vertices, u32 vertex_stride, u32 num_in
   *out_base_vertex = vertex_stride > 0 ? (m_vertex_buffer->GetCurrentOffset() / vertex_stride) : 0;
   *out_base_index = m_index_buffer->GetCurrentOffset() / sizeof(u16);
 
-  CheckBufferBinding();
+  // NOTE: the vertex/index buffer bind moved to SetBuffer (the single
+  // game-draw bind site). CommitBuffer no longer binds.
   m_vertex_buffer->Unmap(vertex_data_size);
   m_index_buffer->Unmap(index_data_size);
 
   ADDSTAT(g_stats.this_frame.bytes_vertex_streamed, vertex_data_size);
   ADDSTAT(g_stats.this_frame.bytes_index_streamed, index_data_size);
+}
+
+void VertexManager::SetBuffer(u32)
+{
+  // The single game-draw bind site. Re-establishes the game VAO for every
+  // draw, which is what makes paused replay correct: after a utility upload
+  // binds a utility VAO, the next game draw rebinds the game one.
+  CheckBufferBinding();
+}
+
+std::optional<UtilityRegion> VertexManager::LockUtilityBuffers(u32 vertex_bytes, u32 index_bytes,
+                                                               u32 vertex_stride)
+{
+  // Reserve EXACT bytes (never MAXVBUFFERSIZE) — the utility arena can only
+  // ever recycle itself, never sweep a game region.
+  if (vertex_bytes > m_utility_vertex_buffer->GetSize())
+    return std::nullopt;
+  if (index_bytes > m_utility_index_buffer->GetSize())
+    return std::nullopt;
+
+  // glMapBufferRange acts on the buffer bound to the target, and the
+  // ARRAY/ELEMENT bindings are VAO state. All binds/maps happen under the
+  // scratch VAO so no real VAO's bindings are ever mutated.
+  glBindVertexArray(m_scratch_vao);
+  glBindBuffer(GL_ARRAY_BUFFER, m_utility_vertex_buffer->GetGLBufferId());
+  const auto [vertex_pointer, vertex_offset] =
+      m_utility_vertex_buffer->Map(vertex_bytes, vertex_stride > 0 ? vertex_stride : 1u);
+
+  u16* index_pointer = nullptr;
+  u32 index_offset = 0;
+  if (index_bytes > 0)
+  {
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_utility_index_buffer->GetGLBufferId());
+    const auto [iptr, ioff] = m_utility_index_buffer->Map(index_bytes);
+    index_pointer = reinterpret_cast<u16*>(iptr);
+    index_offset = ioff;
+  }
+
+  return UtilityRegion{
+      .vertex_pointer = vertex_pointer,
+      .index_pointer = index_pointer,
+      .vertex_offset = vertex_offset,
+      .index_offset = index_offset,
+  };
+}
+
+void VertexManager::UnlockUtilityBuffers(u32 vertex_bytes, u32 index_bytes)
+{
+  // Commit the utility buffers for the caller's immediate draws. The VAO
+  // select happens in SetPipeline (usage == Utility); here we only restore
+  // the pre-lock VAO so the scratch binding doesn't leak.
+  m_utility_vertex_buffer->Unmap(vertex_bytes);
+  if (index_bytes > 0)
+    m_utility_index_buffer->Unmap(index_bytes);
+
+  ADDSTAT(g_stats.this_frame.bytes_vertex_streamed, static_cast<int>(vertex_bytes));
+  ADDSTAT(g_stats.this_frame.bytes_index_streamed, static_cast<int>(index_bytes));
+
+  ProgramShaderCache::ReBindVertexFormat();
 }
 
 void VertexManager::UploadUniforms()

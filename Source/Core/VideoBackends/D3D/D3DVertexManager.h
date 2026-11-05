@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "VideoBackends/D3D/D3DBase.h"
@@ -54,16 +55,40 @@ protected:
   void SetBuffer(u32 vertex_stride) override;
   void UploadUniforms() override;
 
+  std::optional<UtilityRegion> LockUtilityBuffers(u32 vertex_bytes, u32 index_bytes,
+                                                  u32 vertex_stride) override;
+  void UnlockUtilityBuffers(u32 vertex_bytes, u32 index_bytes) override;
+
 private:
   static constexpr u32 BUFFER_COUNT = 2;
   static constexpr u32 BUFFER_SIZE =
       (VERTEX_STREAM_BUFFER_SIZE + INDEX_STREAM_BUFFER_SIZE) / BUFFER_COUNT;
+
+  // Utility vertex arena: own rotating set, mirroring the game path's
+  // interleaved vertex+index layout (incl. stride padding). Sizing: vertex
+  // 4 MB, index 1 MB.
+  static constexpr u32 UTILITY_BUFFER_COUNT = 2;
+  static constexpr u32 UTILITY_BUFFER_SIZE = 4 * 1024 * 1024 + 1 * 1024 * 1024;
 
   bool MapTexelBuffer(u32 required_size, D3D11_MAPPED_SUBRESOURCE& sr);
 
   ComPtr<ID3D11Buffer> m_buffers[BUFFER_COUNT] = {};
   u32 m_current_buffer = 0;
   u32 m_buffer_cursor = 0;
+
+  ComPtr<ID3D11Buffer> m_utility_buffers[UTILITY_BUFFER_COUNT] = {};
+  u32 m_utility_current_buffer = 0;
+  u32 m_utility_buffer_cursor = 0;
+  // Pending state set by LockUtilityBuffers, consumed by UnlockUtilityBuffers.
+  // The D3D11 utility path mirrors the game path's interleaved vertex+index
+  // layout: Lock computes the stride-aligned cursor (and returns it as the
+  // region offsets for base_vertex/base_index math), maps the rotating GPU
+  // buffer, and returns the mapped pointers as the region so the base flow
+  // writes the bytes straight into GPU memory. Unlock unmaps and binds.
+  u32 m_utility_pending_cursor = 0;
+  u32 m_utility_pending_vertex_buffer_size = 0;
+  // Stride of the last utility upload, needed to rebind in Unlock.
+  u32 m_utility_vertex_stride = 0;
 
   ComPtr<ID3D11Buffer> m_vertex_constant_buffer = nullptr;
   ComPtr<ID3D11Buffer> m_geometry_constant_buffer = nullptr;

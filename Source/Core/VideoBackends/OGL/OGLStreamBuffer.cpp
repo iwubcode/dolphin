@@ -235,8 +235,18 @@ public:
   ~BufferStorage() override
   {
     DeleteFences();
+
+    // The buffer may no longer be bound to m_buffertype if a VAO with
+    // different buffer bindings was bound after construction (e.g. during
+    // VertexManager teardown). Re-bind our buffer in a VAO-neutral context
+    // so glUnmapBuffer operates on the correct, still-mapped buffer.
+    GLint bound_vao;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &bound_vao);
+    glBindVertexArray(0);
+    glBindBuffer(m_buffertype, m_buffer);
     glUnmapBuffer(m_buffertype);
     glBindBuffer(m_buffertype, 0);
+    glBindVertexArray(bound_vao);
   }
 
   std::pair<u8*, u32> Map(u32 size) override

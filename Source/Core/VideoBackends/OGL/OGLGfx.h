@@ -92,6 +92,11 @@ public:
   // Restores FBO binding after it's been changed.
   void RestoreFramebufferBinding();
 
+  // The VAO binding was mutated outside SetPipeline (game-path buffer binds).
+  // The next SetPipeline must re-apply its pipeline's VAO even if the pipeline
+  // object is unchanged.
+  void InvalidatePipelineBinding() { m_force_pipeline_refresh = true; }
+
   SurfaceInfo GetSurfaceInfo() const override;
 
 private:
@@ -111,6 +116,7 @@ private:
   RasterizationState m_current_rasterization_state;
   DepthState m_current_depth_state;
   BlendingState m_current_blend_state;
+  bool m_force_pipeline_refresh = false;
   u32 m_shared_read_framebuffer = 0;
   u32 m_shared_draw_framebuffer = 0;
   float m_backbuffer_scale;

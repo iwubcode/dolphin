@@ -88,6 +88,19 @@ bool VertexManager::Initialize()
       D3DCommon::SetDebugObjectName(buffer.Get(), "Buffer of VertexManager");
   }
 
+  // Utility vertex arena: own rotating set, mirroring the game path's
+  // interleaved vertex+index layout (incl. stride padding).
+  CD3D11_BUFFER_DESC utility_buf_desc(UTILITY_BUFFER_SIZE,
+                                      D3D11_BIND_INDEX_BUFFER | D3D11_BIND_VERTEX_BUFFER,
+                                      D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
+  for (auto& buffer : m_utility_buffers)
+  {
+    HRESULT hr = D3D::device->CreateBuffer(&utility_buf_desc, nullptr, &buffer);
+    ASSERT_MSG(VIDEO, SUCCEEDED(hr), "Failed to create utility buffer: {}", DX11HRWrap(hr));
+    if (buffer)
+      D3DCommon::SetDebugObjectName(buffer.Get(), "Utility Buffer of VertexManager");
+  }
+
   m_vertex_constant_buffer = AllocateConstantBuffer(sizeof(VertexShaderConstants));
   m_geometry_constant_buffer = AllocateConstantBuffer(sizeof(GeometryShaderConstants));
   m_pixel_constant_buffer = AllocateConstantBuffer(sizeof(PixelShaderConstants));
@@ -262,6 +275,77 @@ void VertexManager::SetBuffer(u32 vertex_stride)
 {
   D3D::stateman->SetVertexBuffer(m_buffers[m_current_buffer].Get(), vertex_stride, 0);
   D3D::stateman->SetIndexBuffer(m_buffers[m_current_buffer].Get());
+}
+
+std::optional<UtilityRegion> VertexManager::LockUtilityBuffers(u32 vertex_bytes, u32 index_bytes,
+                                                               u32 vertex_stride)
+{
+  // Mirror the game path's interleaved vertex+index layout (incl. stride
+  // padding). Lock computes the stride-aligned cursor and the wrap decision,
+  // then maps the rotating GPU buffer directly and returns the mapped pointers
+  // as the region. The base flow writes the bytes straight into GPU memory;
+  // Unlock unmaps and binds. Mapping directly (rather than staging through
+  // m_cpu_vertex_buffer / m_cpu_index_buffer) keeps the utility flow clear of
+  // game-path state (invariant U4) and avoids the CPU index buffer being
+  // smaller than the utility index arena.
+  const u32 vstride = vertex_stride > 0 ? vertex_stride : 1u;
+  const u32 vertex_buffer_size = Common::AlignUp(vertex_bytes, sizeof(u16));
+  const u32 total_buffer_size = vertex_buffer_size + index_bytes;
+
+  // A single request larger than the whole utility buffer can never fit, even
+  // after wrapping to cursor 0. Skip the draw rather than overflow the buffer.
+  if (total_buffer_size >= UTILITY_BUFFER_SIZE)
+    return std::nullopt;
+
+  u32 cursor = m_utility_buffer_cursor;
+  const u32 padding = cursor % vstride;
+  if (padding)
+    cursor += vstride - padding;
+
+  bool wrapped = false;
+  if (cursor + total_buffer_size >= UTILITY_BUFFER_SIZE)
+  {
+    // Wrap around. The utility arena may recycle itself — nothing records it.
+    m_utility_current_buffer = (m_utility_current_buffer + 1) % UTILITY_BUFFER_COUNT;
+    cursor = 0;
+    wrapped = true;
+  }
+
+  D3D11_MAP map_type = wrapped ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE;
+  D3D11_MAPPED_SUBRESOURCE map;
+  D3D::context->Map(m_utility_buffers[m_utility_current_buffer].Get(), 0, map_type, 0, &map);
+  u8* mapped_data = static_cast<u8*>(map.pData);
+
+  m_utility_pending_cursor = cursor;
+  m_utility_pending_vertex_buffer_size = vertex_buffer_size;
+  m_utility_vertex_stride = vstride;
+
+  return UtilityRegion{
+      .vertex_pointer = mapped_data + cursor,
+      .index_pointer = reinterpret_cast<u16*>(mapped_data + cursor + vertex_buffer_size),
+      .vertex_offset = cursor,
+      .index_offset = cursor + vertex_buffer_size,
+  };
+}
+
+void VertexManager::UnlockUtilityBuffers(u32 vertex_bytes, u32 index_bytes)
+{
+  const u32 cursor = m_utility_pending_cursor;
+  const u32 vertex_buffer_size = m_utility_pending_vertex_buffer_size;
+  const u32 index_buffer_size = index_bytes;
+
+  // The base flow has already written the bytes into the mapped GPU buffer.
+  D3D::context->Unmap(m_utility_buffers[m_utility_current_buffer].Get(), 0);
+
+  m_utility_buffer_cursor = cursor + vertex_buffer_size + index_buffer_size;
+
+  ADDSTAT(g_stats.this_frame.bytes_vertex_streamed, vertex_buffer_size);
+  ADDSTAT(g_stats.this_frame.bytes_index_streamed, index_buffer_size);
+
+  // Commit AND bind the utility buffers for the caller's immediate draws.
+  D3D::stateman->SetVertexBuffer(m_utility_buffers[m_utility_current_buffer].Get(),
+                                 m_utility_vertex_stride, 0);
+  D3D::stateman->SetIndexBuffer(m_utility_buffers[m_utility_current_buffer].Get());
 }
 
 void VertexManager::UploadUniforms()

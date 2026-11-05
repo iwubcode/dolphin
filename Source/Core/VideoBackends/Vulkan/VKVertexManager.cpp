@@ -74,6 +74,18 @@ bool VertexManager::Initialize()
     return false;
   }
 
+  // Utility vertex arena: small dedicated buffers for transient draws (ImGui, EFB
+  // poke). No STORAGE flag / SRV needed — utility draws are triangles only.
+  m_utility_vertex_stream_buffer =
+      StreamBuffer::Create(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, UTILITY_VERTEX_BUFFER_SIZE);
+  m_utility_index_stream_buffer =
+      StreamBuffer::Create(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, UTILITY_INDEX_BUFFER_SIZE);
+  if (!m_utility_vertex_stream_buffer || !m_utility_index_stream_buffer)
+  {
+    PanicAlertFmt("Failed to allocate utility streaming buffers");
+    return false;
+  }
+
   // The validation layer complains if max(offsets) + max(ubo_ranges) >= ubo_size.
   // To work around this we reserve the maximum buffer size at all times, but only commit
   // as many bytes as we use.
@@ -186,9 +198,71 @@ void VertexManager::CommitBuffer(u32 num_vertices, u32 vertex_stride, u32 num_in
   ADDSTAT(g_stats.this_frame.bytes_vertex_streamed, static_cast<int>(vertex_data_size));
   ADDSTAT(g_stats.this_frame.bytes_index_streamed, static_cast<int>(index_data_size));
 
+  // NOTE: the vertex/index buffer bind moved to SetBuffer (the single game-draw
+  // bind site). CommitBuffer no longer binds.
+}
+
+void VertexManager::SetBuffer(u32)
+{
+  // The single game-draw bind site. Re-establishes the game vertex/index binding
+  // for every draw, which is what makes paused replay correct: after a utility
+  // upload binds the utility buffers, the next game draw rebinds the game ones.
   StateTracker::GetInstance()->SetVertexBuffer(m_vertex_stream_buffer->GetBuffer(), 0,
                                                VERTEX_STREAM_BUFFER_SIZE);
   StateTracker::GetInstance()->SetIndexBuffer(m_index_stream_buffer->GetBuffer(), 0,
+                                              VK_INDEX_TYPE_UINT16);
+}
+
+std::optional<UtilityRegion> VertexManager::LockUtilityBuffers(u32 vertex_bytes, u32 index_bytes,
+                                                               u32 vertex_stride)
+{
+  // Reserve EXACT bytes (never MAXVBUFFERSIZE) — the utility arena can only ever
+  // recycle itself, never sweep a game region.
+  const u32 vstride = vertex_stride > 0 ? vertex_stride : 1u;
+  bool has_vbuffer_allocation =
+      m_utility_vertex_stream_buffer->ReserveMemory(vertex_bytes, vstride);
+  bool has_ibuffer_allocation =
+      index_bytes > 0 ? m_utility_index_stream_buffer->ReserveMemory(index_bytes, sizeof(u16))
+                      : true;
+  if (!has_vbuffer_allocation || !has_ibuffer_allocation)
+  {
+    // Flush any pending commands first, so that we can wait on the fences.
+    VKGfx::GetInstance()->ExecuteCommandBuffer(false);
+
+    if (!has_vbuffer_allocation)
+      has_vbuffer_allocation = m_utility_vertex_stream_buffer->ReserveMemory(vertex_bytes, vstride);
+    if (!has_ibuffer_allocation)
+      has_ibuffer_allocation =
+          m_utility_index_stream_buffer->ReserveMemory(index_bytes, sizeof(u16));
+
+    // If we still failed, the request exceeds the utility arena. Skip the draw
+    // rather than panic — a panic in the overlay path is unacceptable.
+    if (!has_vbuffer_allocation || !has_ibuffer_allocation)
+      return std::nullopt;
+  }
+
+  return UtilityRegion{
+      .vertex_pointer = m_utility_vertex_stream_buffer->GetCurrentHostPointer(),
+      .index_pointer =
+          reinterpret_cast<u16*>(m_utility_index_stream_buffer->GetCurrentHostPointer()),
+      .vertex_offset = m_utility_vertex_stream_buffer->GetCurrentOffset(),
+      .index_offset = m_utility_index_stream_buffer->GetCurrentOffset(),
+  };
+}
+
+void VertexManager::UnlockUtilityBuffers(u32 vertex_bytes, u32 index_bytes)
+{
+  m_utility_vertex_stream_buffer->CommitMemory(vertex_bytes);
+  if (index_bytes > 0)
+    m_utility_index_stream_buffer->CommitMemory(index_bytes);
+
+  ADDSTAT(g_stats.this_frame.bytes_vertex_streamed, static_cast<int>(vertex_bytes));
+  ADDSTAT(g_stats.this_frame.bytes_index_streamed, static_cast<int>(index_bytes));
+
+  // Commit AND bind the utility buffers for the caller's immediate draws.
+  StateTracker::GetInstance()->SetVertexBuffer(m_utility_vertex_stream_buffer->GetBuffer(), 0,
+                                               UTILITY_VERTEX_BUFFER_SIZE);
+  StateTracker::GetInstance()->SetIndexBuffer(m_utility_index_stream_buffer->GetBuffer(), 0,
                                               VK_INDEX_TYPE_UINT16);
 }
 

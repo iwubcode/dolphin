@@ -511,9 +511,10 @@ void ProgramShaderCache::CreateAttributelessVAO()
   glEnableVertexAttribArray(0);
 }
 
-void ProgramShaderCache::BindVertexFormat(const GLVertexFormat* vertex_format)
+void ProgramShaderCache::BindVertexFormat(const GLVertexFormat* vertex_format, bool utility)
 {
-  u32 new_VAO = vertex_format ? vertex_format->VAO : s_attributeless_VAO;
+  u32 new_VAO = vertex_format ? (utility ? vertex_format->GetUtilityVAO() : vertex_format->VAO)
+                              : s_attributeless_VAO;
   if (s_last_VAO == new_VAO)
     return;
 
@@ -527,20 +528,21 @@ void ProgramShaderCache::ReBindVertexFormat()
     glBindVertexArray(s_last_VAO);
 }
 
-bool ProgramShaderCache::IsValidVertexFormatBound()
-{
-  return s_last_VAO != 0 && s_last_VAO != s_attributeless_VAO;
-}
-
 void ProgramShaderCache::InvalidateVertexFormat()
 {
   s_last_VAO = 0;
+  // s_last_VAO was zeroed; a subsequent deduped SetPipeline would otherwise
+  // draw on VAO 0. Force a pipeline refresh.
+  GetOGLGfx()->InvalidatePipelineBinding();
 }
 
 void ProgramShaderCache::InvalidateVertexFormatIfBound(GLuint vao)
 {
   if (s_last_VAO == vao)
+  {
     s_last_VAO = 0;
+    GetOGLGfx()->InvalidatePipelineBinding();
+  }
 }
 
 void ProgramShaderCache::InvalidateLastProgram()

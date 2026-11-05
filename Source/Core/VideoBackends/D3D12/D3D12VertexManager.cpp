@@ -42,6 +42,15 @@ bool VertexManager::Initialize()
     return false;
   }
 
+  // Utility vertex arena: small dedicated stream buffers for transient draws
+  // (ImGui, EFB poke). Never recorded, never replayed.
+  if (!m_utility_vertex_stream_buffer.AllocateBuffer(UTILITY_VERTEX_BUFFER_SIZE) ||
+      !m_utility_index_stream_buffer.AllocateBuffer(UTILITY_INDEX_BUFFER_SIZE))
+  {
+    PanicAlertFmt("Failed to allocate utility streaming buffers");
+    return false;
+  }
+
   static constexpr std::array<std::pair<TexelBufferFormat, DXGI_FORMAT>, NUM_TEXEL_BUFFER_FORMATS>
       format_mapping = {{
           {TEXEL_BUFFER_FORMAT_R8_UINT, DXGI_FORMAT_R8_UINT},
@@ -77,6 +86,20 @@ bool VertexManager::Initialize()
   srv_desc.Buffer.NumElements = m_vertex_stream_buffer.GetSize() / sizeof(u32);
   g_dx_context->GetDevice()->CreateShaderResourceView(m_vertex_stream_buffer.GetBuffer(), &srv_desc,
                                                       m_vertex_srv.cpu_handle);
+
+  // Utility vertex SRV: Gfx::SetVertexBuffer takes an SRV handle, so allocate one
+  // for the utility vertex buffer, mirroring m_vertex_srv.
+  if (!g_dx_context->GetDescriptorHeapManager().Allocate(&m_utility_vertex_srv))
+  {
+    PanicAlertFmt("Failed to allocate descriptor for utility vertex srv");
+    return false;
+  }
+  D3D12_SHADER_RESOURCE_VIEW_DESC utility_srv_desc = {
+      DXGI_FORMAT_R32_UINT, D3D12_SRV_DIMENSION_BUFFER, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
+  utility_srv_desc.Buffer.NumElements = m_utility_vertex_stream_buffer.GetSize() / sizeof(u32);
+  g_dx_context->GetDevice()->CreateShaderResourceView(m_utility_vertex_stream_buffer.GetBuffer(),
+                                                      &utility_srv_desc,
+                                                      m_utility_vertex_srv.cpu_handle);
 
   UploadAllConstants();
   return true;
@@ -138,6 +161,62 @@ void VertexManager::SetBuffer(u32 vertex_stride)
                                       m_vertex_stream_buffer.GetSize());
   Gfx::GetInstance()->SetIndexBuffer(m_index_stream_buffer.GetGPUPointer(),
                                      m_index_stream_buffer.GetSize(), DXGI_FORMAT_R16_UINT);
+}
+
+std::optional<UtilityRegion> VertexManager::LockUtilityBuffers(u32 vertex_bytes, u32 index_bytes,
+                                                               u32 vertex_stride)
+{
+  // Reserve EXACT bytes (never MAXVBUFFERSIZE) — the utility arena can only ever
+  // recycle itself, never sweep a game region.
+  const u32 vstride = vertex_stride > 0 ? vertex_stride : 1u;
+  m_utility_vertex_stride = vstride;
+  bool has_vbuffer_allocation =
+      m_utility_vertex_stream_buffer.ReserveMemory(vertex_bytes, vstride);
+  bool has_ibuffer_allocation =
+      index_bytes > 0 ? m_utility_index_stream_buffer.ReserveMemory(index_bytes, sizeof(u16))
+                      : true;
+  if (!has_vbuffer_allocation || !has_ibuffer_allocation)
+  {
+    // Flush any pending commands first, so that we can wait on the fences.
+    Gfx::GetInstance()->ExecuteCommandList(false);
+
+    if (!has_vbuffer_allocation)
+      has_vbuffer_allocation = m_utility_vertex_stream_buffer.ReserveMemory(vertex_bytes, vstride);
+    if (!has_ibuffer_allocation)
+      has_ibuffer_allocation =
+          m_utility_index_stream_buffer.ReserveMemory(index_bytes, sizeof(u16));
+
+    // If we still failed, the request exceeds the utility arena. Skip the draw
+    // rather than panic — a panic in the overlay path is unacceptable.
+    if (!has_vbuffer_allocation || !has_ibuffer_allocation)
+      return std::nullopt;
+  }
+
+  return UtilityRegion{
+      .vertex_pointer = m_utility_vertex_stream_buffer.GetCurrentHostPointer(),
+      .index_pointer =
+          reinterpret_cast<u16*>(m_utility_index_stream_buffer.GetCurrentHostPointer()),
+      .vertex_offset = m_utility_vertex_stream_buffer.GetCurrentOffset(),
+      .index_offset = m_utility_index_stream_buffer.GetCurrentOffset(),
+  };
+}
+
+void VertexManager::UnlockUtilityBuffers(u32 vertex_bytes, u32 index_bytes)
+{
+  m_utility_vertex_stream_buffer.CommitMemory(vertex_bytes);
+  if (index_bytes > 0)
+    m_utility_index_stream_buffer.CommitMemory(index_bytes);
+
+  ADDSTAT(g_stats.this_frame.bytes_vertex_streamed, static_cast<int>(vertex_bytes));
+  ADDSTAT(g_stats.this_frame.bytes_index_streamed, static_cast<int>(index_bytes));
+
+  // Commit AND bind the utility buffers for the caller's immediate draws.
+  Gfx::GetInstance()->SetVertexBuffer(m_utility_vertex_stream_buffer.GetGPUPointer(),
+                                      m_utility_vertex_srv.cpu_handle, m_utility_vertex_stride,
+                                      m_utility_vertex_stream_buffer.GetSize());
+  Gfx::GetInstance()->SetIndexBuffer(m_utility_index_stream_buffer.GetGPUPointer(),
+                                     m_utility_index_stream_buffer.GetSize(),
+                                     DXGI_FORMAT_R16_UINT);
 }
 
 void VertexManager::UploadUniforms()

@@ -618,16 +618,23 @@ void OGLGfx::ApplyBlendingState(const BlendingState state)
 
 void OGLGfx::SetPipeline(const AbstractPipeline* pipeline)
 {
-  if (m_current_pipeline == pipeline)
-    return;
-
   if (pipeline)
   {
+    // The VAO binding can be mutated outside SetPipeline (game-path buffer
+    // binds via CheckBufferBinding), so a forced refresh must re-apply the
+    // pipeline's VAO even when the pipeline object is unchanged. The forced
+    // refresh is cheap: every Apply* below has its own state dedup and
+    // Shader::Bind dedups on CurrentProgram, so the only real GL call is
+    // glBindVertexArray.
+    if (m_current_pipeline == pipeline && !m_force_pipeline_refresh)
+      return;
+
     ApplyRasterizationState(static_cast<const OGLPipeline*>(pipeline)->GetRasterizationState());
     ApplyDepthState(static_cast<const OGLPipeline*>(pipeline)->GetDepthState());
     ApplyBlendingState(static_cast<const OGLPipeline*>(pipeline)->GetBlendingState());
     ProgramShaderCache::BindVertexFormat(
-        static_cast<const OGLPipeline*>(pipeline)->GetVertexFormat());
+        static_cast<const OGLPipeline*>(pipeline)->GetVertexFormat(),
+        pipeline->m_config.usage == AbstractPipelineUsage::Utility);
     static_cast<const OGLPipeline*>(pipeline)->GetProgram()->shader.Bind();
   }
   else
@@ -636,6 +643,7 @@ void OGLGfx::SetPipeline(const AbstractPipeline* pipeline)
     glUseProgram(0);
   }
   m_current_pipeline = pipeline;
+  m_force_pipeline_refresh = false;
 }
 
 void OGLGfx::SetTexture(u32 index, const AbstractTexture* texture)

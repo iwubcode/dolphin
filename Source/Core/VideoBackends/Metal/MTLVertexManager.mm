@@ -3,8 +3,11 @@
 
 #include "VideoBackends/Metal/MTLVertexManager.h"
 
+#include "Common/MsgHandler.h"
+
 #include "Core/System.h"
 
+#include "VideoBackends/Metal/MTLObjectCache.h"
 #include "VideoBackends/Metal/MTLStateTracker.h"
 
 #include "VideoCommon/GeometryShaderManager.h"
@@ -17,6 +20,30 @@ Metal::VertexManager::VertexManager()
 }
 
 Metal::VertexManager::~VertexManager() = default;
+
+bool Metal::VertexManager::Initialize()
+{
+  if (!VertexManagerBase::Initialize())
+    return false;
+
+  // Utility vertex arena: dedicated persistent CPU-shared MTLBuffers OUTSIDE the
+  // StateTracker upload ring. Overwritten in place; offsets always 0.
+  const MTLResourceOptions options =
+      MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined;
+  m_utility_vertex_buffer =
+      MRCTransfer([g_device newBufferWithLength:UTILITY_VERTEX_BUFFER_SIZE options:options]);
+  [m_utility_vertex_buffer setLabel:@"Utility Vertex Buffer"];
+  m_utility_index_buffer =
+      MRCTransfer([g_device newBufferWithLength:UTILITY_INDEX_BUFFER_SIZE options:options]);
+  [m_utility_index_buffer setLabel:@"Utility Index Buffer"];
+  if (!m_utility_vertex_buffer || !m_utility_index_buffer)
+  {
+    PanicAlertFmt("Failed to allocate utility vertex buffers");
+    return false;
+  }
+
+  return true;
+}
 
 void Metal::VertexManager::UploadUtilityUniforms(const void* uniforms, u32 uniforms_size)
 {
@@ -85,9 +112,54 @@ void Metal::VertexManager::CommitBuffer(u32 num_vertices, u32 vertex_stride, u32
   ADDSTAT(g_stats.this_frame.bytes_index_streamed, isize);
 
   DEBUG_ASSERT(vmap.gpu_offset + m_vertex_offset == m_base_vertex * vertex_stride);
-  g_state_tracker->SetVerticesAndIndices(vmap.gpu_buffer, imap.gpu_buffer);
+  // Cache the committed pair; the bind moved to SetBuffer (the single game-draw
+  // bind site). CommitBuffer no longer binds.
+  m_committed_vertex_buffer = vmap.gpu_buffer;
+  m_committed_index_buffer = imap.gpu_buffer;
   *out_base_vertex = m_base_vertex;
   *out_base_index = imap.gpu_offset / sizeof(u16);
+}
+
+void Metal::VertexManager::SetBuffer(u32)
+{
+  // The single game-draw bind site. Re-applies the cached committed pair for
+  // every draw, which is what makes paused replay correct: after a utility
+  // upload binds the utility buffers, the next game draw rebinds the game ones.
+  //
+  // A single cached pair is correct on Metal because deferred rendering is gated
+  // OFF (bSupportsDeferredGraphics = false): no snapshot offsets ever outlive a
+  // frame, so "the buffers the draw's offsets reference" is always "the last
+  // committed pair."
+  if (m_committed_vertex_buffer)
+    g_state_tracker->SetVerticesAndIndices(m_committed_vertex_buffer, m_committed_index_buffer);
+}
+
+std::optional<UtilityRegion> Metal::VertexManager::LockUtilityBuffers(u32 vertex_bytes,
+                                                                      u32 index_bytes, u32)
+{
+  // Bounds-check against the dedicated persistent utility buffers. Offsets are
+  // always 0 (the buffers are overwritten in place). Returns nullopt on
+  // overflow (skip the draw, never panic).
+  if (vertex_bytes > UTILITY_VERTEX_BUFFER_SIZE)
+    return std::nullopt;
+  if (index_bytes > UTILITY_INDEX_BUFFER_SIZE)
+    return std::nullopt;
+
+  return UtilityRegion{
+      .vertex_pointer = static_cast<u8*>([m_utility_vertex_buffer contents]),
+      .index_pointer = static_cast<u16*>([m_utility_index_buffer contents]),
+      .vertex_offset = 0,
+      .index_offset = 0,
+  };
+}
+
+void Metal::VertexManager::UnlockUtilityBuffers(u32 vertex_bytes, u32 index_bytes)
+{
+  ADDSTAT(g_stats.this_frame.bytes_vertex_streamed, vertex_bytes);
+  ADDSTAT(g_stats.this_frame.bytes_index_streamed, index_bytes);
+
+  // Commit AND bind the utility buffers for the caller's immediate draws.
+  g_state_tracker->SetVerticesAndIndices(m_utility_vertex_buffer, m_utility_index_buffer);
 }
 
 void Metal::VertexManager::UploadUniforms()
