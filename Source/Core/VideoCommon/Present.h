@@ -44,6 +44,10 @@ public:
   void Present(PresentInfo* present_info = nullptr);
   void ClearLastXfbId() { m_last_xfb_id = std::numeric_limits<u64>::max(); }
 
+  /// Replays the last captured frame and re-presents it (paused FreeLook).
+  /// No-op unless paused and an XFB has been presented. Video thread only.
+  void PresentPausedFrame();
+
   bool Initialize();
 
   void ConfigChanged(u32 changed_bits);

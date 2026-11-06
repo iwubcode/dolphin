@@ -6,6 +6,7 @@
 #include "Common/ChunkFile.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/Core.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/VideoInterface.h"
 #include "Core/Host.h"
@@ -15,6 +16,7 @@
 
 #include "Present.h"
 #include "VideoCommon/AbstractGfx.h"
+#include "VideoCommon/EmulatedGraphicsManager.h"
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/OnScreenUI.h"
@@ -193,6 +195,7 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
     // so just use its name directly
     if (m_xfb_entry->references.empty())
     {
+      present_info.xfb_copy_entries.push_back(m_xfb_entry.get());
       if (!m_xfb_entry->texture_info_name.empty())
         present_info.xfb_copy_hashes.push_back(m_xfb_entry->texture_info_name);
     }
@@ -200,6 +203,7 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
     {
       for (const auto& reference : m_xfb_entry->references)
       {
+        present_info.xfb_copy_entries.push_back(reference);
         if (!reference->texture_info_name.empty())
           present_info.xfb_copy_hashes.push_back(reference->texture_info_name);
       }
@@ -238,6 +242,18 @@ void Presenter::ImmediateSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_
       .emulated_timestamp = ticks,
       .intended_present_time = m_next_swap_estimated_time,
   };
+
+  if (m_xfb_entry)
+  {
+    // Same entry-identity population as ViSwap (see comment there).
+    if (m_xfb_entry->references.empty())
+      present_info.xfb_copy_entries.push_back(m_xfb_entry.get());
+    else
+    {
+      for (const auto& reference : m_xfb_entry->references)
+        present_info.xfb_copy_entries.push_back(reference);
+    }
+  }
 
   auto& video_events = GetVideoEvents();
 
@@ -1056,6 +1072,30 @@ void Presenter::DoState(PointerWrap& p)
 
     ImmediateSwap(m_last_xfb_addr, m_last_xfb_width, m_last_xfb_stride, m_last_xfb_height);
   }
+
+  // Savestate load while paused: clear the presented-frame ring (D11). Presented frames
+  // are derived data — no serialization. Next paused present shows the stale-but-alive
+  // m_xfb_entry texture; no crash (gate 4).
+  if (p.IsReadMode())
+    Core::System::GetInstance().GetEmulatedGraphicsManager().ClearPresentedFrames();
+}
+
+void Presenter::PresentPausedFrame()
+{
+  auto& system = Core::System::GetInstance();
+  if (Core::GetState(system) != Core::State::Paused)
+    return;
+  if (!m_xfb_entry)
+    return;
+
+  system.GetEmulatedGraphicsManager().ReplayPresentedFrame();  // no-op unless deferred active
+  GetVideoEvents().after_frame_event.Trigger(system);
+
+  // re-stitch: re-fetch the XFB texture over the rebuilt copies
+  FetchXFB(m_last_xfb_addr, m_last_xfb_width, m_last_xfb_stride, m_last_xfb_height,
+           m_last_xfb_ticks);
+
+  Present(nullptr);  // nullptr skips SleepUntil; never ViSwap -> no frame-counter bookkeeping
 }
 
 }  // namespace VideoCommon
