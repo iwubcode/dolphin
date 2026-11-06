@@ -178,6 +178,10 @@ struct BackendInfo
   bool bSupportsPartialMultisampleResolve = false;
   bool bSupportsDynamicVertexLoader = false;
   bool bSupportsVSLinePointExpand = false;
+  // Whether the backend can safely replay recorded draws (deferred rendering /
+  // graphic mods). Forced false by Metal: its vertex buffers are orphaned by the
+  // upload ring, so snapshot offsets can outlive the buffers they reference.
+  bool bSupportsDeferredGraphics = true;
   bool bSupportsGLLayerInFS = true;
   bool bSupportsHDROutput = false;
   bool bSupportsUnrestrictedDepthRange = false;
