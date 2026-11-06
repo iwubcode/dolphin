@@ -69,6 +69,9 @@
 #include "Core/System.h"
 #include "Core/WiiUtils.h"
 
+#include "VideoCommon/AsyncRequests.h"
+#include "VideoCommon/Present.h"
+
 #include "DiscIO/DirectoryBlob.h"
 #include "DiscIO/NANDImporter.h"
 #include "DiscIO/RiivolutionPatcher.h"
@@ -424,7 +427,25 @@ void MainWindow::InitCoreCallbacks()
       FullScreen();
       m_fullscreen_requested = false;
     }
+
+    // Paused FreeLook: start/stop the present timer (Phase 2 contract §6).
+    if (state == Core::State::Paused)
+      m_paused_present_timer.start(16);
+    else
+      m_paused_present_timer.stop();
   });
+
+  connect(&m_paused_present_timer, &QTimer::timeout, this, [this] {
+    Core::RunOnCPUThread(m_system, [this] {
+      if (!g_presenter)
+        return;
+      if (m_system.IsDualCoreMode())
+        AsyncRequests::GetInstance()->PushEvent([] { g_presenter->PresentPausedFrame(); });
+      else
+        g_presenter->PresentPausedFrame();
+    });
+  });
+
   installEventFilter(this);
   m_render_widget->installEventFilter(this);
 

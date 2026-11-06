@@ -5,6 +5,7 @@
 
 #include <QMainWindow>
 #include <QStringList>
+#include <QTimer>
 
 #include <array>
 #include <memory>
@@ -293,4 +294,7 @@ private:
   WatchWidget* m_watch_widget;
   CheatsManager* m_cheats_manager{};
   QByteArray m_render_widget_geometry;
+
+  // Paused FreeLook: drives Presenter::PresentPausedFrame at ~60 Hz while paused.
+  QTimer m_paused_present_timer;
 };
